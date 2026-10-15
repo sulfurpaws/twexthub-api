@@ -7,6 +7,7 @@ import {
   apiPath,
   bearer,
   boot,
+  followPages,
   publishProject,
   resetDb,
   signupAndAccept,
@@ -85,6 +86,25 @@ async function insertWebhook(ns, url, events) {
     RETURNING id
   `;
   return row.id;
+}
+
+// A delivery in a chosen state, for the log and redelivery endpoints. The body
+// and signature are real enough to tell a copy from a rewrite.
+async function insertDelivery(webhookId, { status = 'pending', attempt = 0 } = {}) {
+  const payload = {
+    event: 'version.published',
+    namespace: 'hooked',
+    id: 'hooked',
+    version: '1.0.0',
+  };
+  const body = JSON.stringify(payload);
+  const [row] = await sql`
+    INSERT INTO webhook_deliveries (webhook_id, event, payload, body, signature, status, attempt)
+    VALUES (${webhookId}, 'version.published', ${sql.json(payload)}, ${body}, 'test-signature',
+            ${status}, ${attempt})
+    RETURNING *
+  `;
+  return row;
 }
 
 // The sandbox resolver cannot resolve fake hosts, so create() calls in tests
@@ -653,4 +673,154 @@ test('a stale attempt cannot overwrite a delivery another worker has taken', asy
   assert.equal(after.status, 'delivering', 'a non-holder must not resolve the row');
   assert.equal(after.attempt, 2, 'the claim holder attempt count is left alone');
   assert.equal(after.last_error, null);
+});
+
+test('a webhook lists its deliveries newest first, without the signed body', async () => {
+  const { owner, ns } = await makeOwner();
+  const created = await request(app)
+    .post(apiPath(`/@${ns}/hooked/webhooks`))
+    .set(bearer(owner.token))
+    .send({ url: PUBLIC_URL, events: ['version.published'] })
+    .expect(201);
+
+  const first = await insertDelivery(created.body.id, { status: 'delivered' });
+  const second = await insertDelivery(created.body.id, { status: 'failed', attempt: 4 });
+
+  const page = await request(app)
+    .get(apiPath(`/@${ns}/hooked/webhooks/${created.body.id}/deliveries`))
+    .set(bearer(owner.token))
+    .expect(200);
+  assert.deepEqual(
+    page.body.data.map((delivery) => delivery.id),
+    [second.id, first.id],
+  );
+  const [latest] = page.body.data;
+  assert.equal(latest.status, 'failed');
+  assert.equal(latest.attempt, 4);
+  assert.equal(latest.max_attempts, 4);
+  assert.equal(latest.payload.version, '1.0.0');
+  assert.equal(latest.next_attempt_at, null);
+  // The body is the signed bytes and the signature is derived from the secret;
+  // neither belongs in a listing, and the hook id is already in the path.
+  assert.equal(latest.body, undefined);
+  assert.equal(latest.signature, undefined);
+  assert.equal(latest.webhook_id, undefined);
+});
+
+test('the delivery log pages like the rest of the API', async () => {
+  const { owner, ns } = await makeOwner();
+  const created = await request(app)
+    .post(apiPath(`/@${ns}/hooked/webhooks`))
+    .set(bearer(owner.token))
+    .send({ url: PUBLIC_URL, events: ['version.published'] })
+    .expect(201);
+
+  const ids = [];
+  for (let i = 0; i < 3; i += 1) {
+    ids.push((await insertDelivery(created.body.id)).id);
+  }
+
+  const start = apiPath(`/@${ns}/hooked/webhooks/${created.body.id}/deliveries?limit=1`);
+  const { rows, pages } = await followPages(app, start, bearer(owner.token));
+  assert.equal(pages.length, 3);
+  assert.deepEqual(
+    rows.map((delivery) => delivery.id),
+    ids.toReversed(),
+  );
+  assert.equal(pages[0]._links.prev, null);
+  assert.equal(pages.at(-1)._links.next, null);
+});
+
+test('redelivering a finished delivery queues the same signed body again', async () => {
+  const { owner, ns } = await makeOwner();
+  const created = await request(app)
+    .post(apiPath(`/@${ns}/hooked/webhooks`))
+    .set(bearer(owner.token))
+    .send({ url: PUBLIC_URL, events: ['version.published'] })
+    .expect(201);
+
+  const original = await insertDelivery(created.body.id, { status: 'failed', attempt: 4 });
+  const response = await request(app)
+    .post(apiPath(`/@${ns}/hooked/webhooks/${created.body.id}/deliveries/${original.id}/redeliver`))
+    .set(bearer(owner.token))
+    .expect(202);
+  assert.equal(response.body.status, 'pending');
+  assert.equal(response.body.attempt, 0);
+  assert.notEqual(response.body.id, original.id);
+
+  const [copy] = await sql`
+    SELECT body, signature, next_attempt_at FROM webhook_deliveries WHERE id = ${response.body.id}
+  `;
+  assert.equal(copy.body, original.body, 'the redelivery sends the bytes that were signed');
+  assert.equal(copy.signature, original.signature);
+  assert.equal(copy.next_attempt_at, null, 'a queued delivery has no retry deadline yet');
+
+  // The original is left alone, so the failure it re-runs is still in the log.
+  const [kept] =
+    await sql`SELECT status, attempt FROM webhook_deliveries WHERE id = ${original.id}`;
+  assert.equal(kept.status, 'failed');
+  assert.equal(kept.attempt, 4);
+
+  // The copy is what the worker picks up next.
+  const claimed = await claimDue(sql, Date.now());
+  assert.ok(claimed.some((row) => row.id === response.body.id));
+});
+
+test('a delivery that has not finished cannot be redelivered', async () => {
+  const { owner, ns } = await makeOwner();
+  const created = await request(app)
+    .post(apiPath(`/@${ns}/hooked/webhooks`))
+    .set(bearer(owner.token))
+    .send({ url: PUBLIC_URL, events: ['version.published'] })
+    .expect(201);
+
+  for (const status of ['pending', 'retrying', 'delivering']) {
+    const delivery = await insertDelivery(created.body.id, { status });
+    const refused = await request(app)
+      .post(
+        apiPath(`/@${ns}/hooked/webhooks/${created.body.id}/deliveries/${delivery.id}/redeliver`),
+      )
+      .set(bearer(owner.token));
+    assert.equal(refused.status, 409, `${status} should not be redelivered`);
+  }
+});
+
+test('the delivery log answers to the hook owner and to the hook it names', async () => {
+  const { owner, ns } = await makeOwner();
+  const outsider = await signupAndAccept(app, uniqNs());
+  const created = await request(app)
+    .post(apiPath(`/@${ns}/hooked/webhooks`))
+    .set(bearer(owner.token))
+    .send({ url: PUBLIC_URL, events: ['version.published'] })
+    .expect(201);
+  const delivery = await insertDelivery(created.body.id);
+
+  // A stranger sees neither the log nor the redelivery, on the same gate the
+  // hook itself uses.
+  await request(app)
+    .get(apiPath(`/@${ns}/hooked/webhooks/${created.body.id}/deliveries`))
+    .set(bearer(outsider.token))
+    .expect(403);
+  await request(app)
+    .post(apiPath(`/@${ns}/hooked/webhooks/${created.body.id}/deliveries/${delivery.id}/redeliver`))
+    .set(bearer(outsider.token))
+    .expect(403);
+
+  // An id that names no hook in this collection is a 404, not an empty log.
+  await request(app)
+    .get(apiPath(`/@${ns}/hooked/webhooks/999999/deliveries`))
+    .set(bearer(owner.token))
+    .expect(404);
+
+  // A delivery belonging to another hook is not reachable through this one.
+  const otherHook = await insertWebhook(ns, PUBLIC_URL, ['version.published']);
+  const otherDelivery = await insertDelivery(otherHook);
+  await request(app)
+    .post(
+      apiPath(
+        `/@${ns}/hooked/webhooks/${created.body.id}/deliveries/${otherDelivery.id}/redeliver`,
+      ),
+    )
+    .set(bearer(owner.token))
+    .expect(404);
 });

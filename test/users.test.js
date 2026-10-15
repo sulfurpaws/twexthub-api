@@ -532,3 +532,40 @@ test('deleting an account removes its webhooks and their deliveries', async () =
   const after = await hookState();
   assert.deepEqual(after, { hooks: 0, deliveries: 0 });
 });
+
+test('an account hook exposes its delivery log and redelivers', async () => {
+  const { user, token } = await signupAndAccept(app, uniqNs());
+  const ns = user.namespace;
+  const created = await request(app)
+    .post(apiPath(`/users/${ns}/webhooks`))
+    .set(bearer(token))
+    .send({ url: PUBLIC_URL, events: ['version.published'] })
+    .expect(201);
+
+  const [delivery] = await sql`
+    INSERT INTO webhook_deliveries (webhook_id, event, payload, body, signature, status, attempt)
+    VALUES (${created.body.id}, 'version.published', ${sql.json({ id: 'one' })}, '{}', 'sig',
+            'delivered', 1)
+    RETURNING id
+  `;
+
+  const listed = await request(app)
+    .get(apiPath(`/users/${ns}/webhooks/${created.body.id}/deliveries`))
+    .set(bearer(token))
+    .expect(200);
+  assert.equal(listed.body.data.length, 1);
+  assert.equal(listed.body.data[0].id, delivery.id);
+  assert.equal(listed.body.data[0].status, 'delivered');
+
+  const redelivered = await request(app)
+    .post(apiPath(`/users/${ns}/webhooks/${created.body.id}/deliveries/${delivery.id}/redeliver`))
+    .set(bearer(token))
+    .expect(202);
+  assert.equal(redelivered.body.status, 'pending');
+
+  const outsider = await signupAndAccept(app, uniqNs());
+  await request(app)
+    .get(apiPath(`/users/${ns}/webhooks/${created.body.id}/deliveries`))
+    .set(bearer(outsider.token))
+    .expect(403);
+});

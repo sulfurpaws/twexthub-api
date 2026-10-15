@@ -2,6 +2,7 @@ import { createHmac, randomBytes } from 'node:crypto';
 import { lookup } from 'node:dns/promises';
 import https from 'node:https';
 import { isIP } from 'node:net';
+import { conflict, notFound } from './errors.js';
 
 export const WEBHOOK_EVENTS = Object.freeze([
   'version.published',
@@ -213,6 +214,65 @@ export function makeWebhooks({ sql, resolveTarget = assertPublicWebhookUrl }) {
     return Boolean(deleted);
   }
 
+  // The hook a delivery log belongs to, or null when the id names one in
+  // another collection or namespace. `remove` refuses the same mismatches with
+  // the same clause, so an id means the same thing wherever it is passed.
+  async function scopedWebhook(namespace, extensionId, id) {
+    const [row] = await sql`
+      SELECT id FROM webhooks
+      WHERE id = ${id} AND namespace = ${namespace}
+        AND extension_id IS NOT DISTINCT FROM ${extensionId}
+    `;
+    return row ?? null;
+  }
+
+  // A hook's log, newest first. The body and its signature stay out of it: the
+  // payload is the same object and all a UI can render, while the raw bytes and
+  // the HMAC over them only mean something to the receiver verifying them.
+  async function listDeliveries(namespace, extensionId, webhookId, { limit, cursor, back }) {
+    if (!(await scopedWebhook(namespace, extensionId, webhookId))) {
+      throw notFound('No such webhook.');
+    }
+    return await sql`
+      SELECT id, event, payload, attempt, max_attempts, status, next_attempt_at,
+             last_error, created_at, updated_at
+      FROM webhook_deliveries
+      WHERE webhook_id = ${webhookId}
+        ${cursor ? (back ? sql`AND id > ${cursor.i}` : sql`AND id < ${cursor.i}`) : sql``}
+      ORDER BY id ${back ? sql`ASC` : sql`DESC`}
+      LIMIT ${limit + 1}
+    `;
+  }
+
+  // Queue a delivery's signed body again. This inserts rather than resets the
+  // row, so the failed attempt it re-runs stays in the log beside the retry.
+  // Body and signature are copied verbatim because they were signed with a
+  // secret that does not change.
+  async function redeliver(namespace, extensionId, webhookId, deliveryId) {
+    const [delivery] = await sql`
+      SELECT d.status
+      FROM webhook_deliveries d
+      JOIN webhooks w ON w.id = d.webhook_id
+      WHERE d.id = ${deliveryId} AND d.webhook_id = ${webhookId}
+        AND w.namespace = ${namespace}
+        AND w.extension_id IS NOT DISTINCT FROM ${extensionId}
+    `;
+    if (!delivery) throw notFound('No such delivery.');
+    // A delivery still queued or in flight is already on its way out; a second
+    // copy now would put the receiver through it twice.
+    if (delivery.status !== 'delivered' && delivery.status !== 'failed') {
+      throw conflict('That delivery has not finished yet.');
+    }
+    const [row] = await sql`
+      INSERT INTO webhook_deliveries (webhook_id, event, payload, body, signature, max_attempts)
+      SELECT webhook_id, event, payload, body, signature, max_attempts
+      FROM webhook_deliveries WHERE id = ${deliveryId}
+      RETURNING id, event, payload, attempt, max_attempts, status, next_attempt_at,
+                last_error, created_at, updated_at
+    `;
+    return row;
+  }
+
   async function scheduleFor(namespace, extensionId, event, basePayload) {
     try {
       // A namespace-wide hook (extension_id IS NULL) is scheduled alongside the
@@ -287,7 +347,7 @@ export function makeWebhooks({ sql, resolveTarget = assertPublicWebhookUrl }) {
     };
   }
 
-  return { create, list, remove, scheduleFor, worker };
+  return { create, list, remove, listDeliveries, redeliver, scheduleFor, worker };
 }
 
 // Take ownership of the deliveries that are due, up to a batch. Returns them

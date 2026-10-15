@@ -817,6 +817,43 @@ describe('webhooks', () => {
     assert.equal(badUrl.status, 422);
     assert.equal(badUrl.body.errors[0].field, 'url');
   });
+
+  test('an organization hook exposes its delivery log and redelivers', async () => {
+    const { ns, owner } = await org();
+    const created = await request(app)
+      .post(apiPath(`/orgs/${ns}/webhooks`))
+      .set(bearer(owner.token))
+      .send({ url: PUBLIC_URL, events: ['version.published'] })
+      .expect(201);
+
+    const [delivery] = await sql`
+      INSERT INTO webhook_deliveries (webhook_id, event, payload, body, signature, status, attempt)
+      VALUES (${created.body.id}, 'version.published', ${sql.json({ id: 'one' })}, '{}', 'sig',
+              'failed', 4)
+      RETURNING id
+    `;
+
+    const listed = await request(app)
+      .get(apiPath(`/orgs/${ns}/webhooks/${created.body.id}/deliveries`))
+      .set(bearer(owner.token))
+      .expect(200);
+    assert.equal(listed.body.data.length, 1);
+    assert.equal(listed.body.data[0].id, delivery.id);
+    assert.equal(listed.body.data[0].status, 'failed');
+
+    const redelivered = await request(app)
+      .post(apiPath(`/orgs/${ns}/webhooks/${created.body.id}/deliveries/${delivery.id}/redeliver`))
+      .set(bearer(owner.token))
+      .expect(202);
+    assert.equal(redelivered.body.status, 'pending');
+
+    // The namespace-wide hook is a different scope from any per-extension
+    // collection, so its log is not reachable through one.
+    await request(app)
+      .get(apiPath(`/@${ns}/one/webhooks/${created.body.id}/deliveries`))
+      .set(bearer(owner.token))
+      .expect(404);
+  });
 });
 
 describe('images', () => {
