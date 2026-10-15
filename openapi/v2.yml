@@ -3376,7 +3376,7 @@ components:
 
     VersionInfo:
       type: object
-      required: [namespace, id, version, status, createdAt]
+      required: [namespace, id, version, status, createdAt, downloads]
       properties:
         namespace: { $ref: '#/components/schemas/Namespace' }
         id: { $ref: '#/components/schemas/ExtensionId' }
@@ -3387,6 +3387,11 @@ components:
         description: { type: string }
         author: { type: ['string', 'null'] }
         createdAt: { type: string, format: date-time }
+        downloads:
+          type: integer
+          description: >
+            Total recorded downloads of this version. Zero for a version that
+            has never been downloaded, including one still awaiting review.
         publishedAt:
           { type: string, format: date-time, description: Absent while pending or rejected. }
         deprecation:

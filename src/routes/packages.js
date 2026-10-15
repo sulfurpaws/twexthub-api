@@ -62,7 +62,12 @@ import { extractTarballBuffer } from '../tarball.js';
 import { compileProject } from '../compiler.js';
 import { scanSourceWarnings } from '../risky-patterns.js';
 import { minifyCode, MINIFY_INPUT_MAX_BYTES } from '../minify.js';
-import { totalDownloads, hashDownloadAddress } from '../metrics.js';
+import {
+  totalDownloads,
+  versionDownloads,
+  versionDownloadTotals,
+  hashDownloadAddress,
+} from '../metrics.js';
 import { makeWebhooks, WebhookInputError } from '../webhooks.js';
 import { makeWebhookDeliveryRoutes } from './webhook-deliveries.js';
 import { audit, auditSoon } from '../audit.js';
@@ -242,12 +247,14 @@ export function makePackagesRouter({ sql, config, termsGate, rateLimiter, resolv
     // here over the versions already filtered.
     matches.sort((a, b) => semver.rcompare(a.coerced, b.coerced));
 
+    const totals = await versionDownloadTotals(sql, namespace, id);
     res.json(
       offsetPage(req, matches.slice(offset, offset + limit), {
         limit,
         offset,
         total: matches.length,
-        serialize: (entry) => versionToObject(entry.row, config),
+        serialize: (entry) =>
+          versionToObject(entry.row, config, totals.get(entry.row.version) ?? 0n),
       }),
     );
   });
@@ -567,7 +574,13 @@ export function makePackagesRouter({ sql, config, termsGate, rateLimiter, resolv
     if (!isVisible && !(await maySeeUnpublished(req, req.params.namespace, req.params.id))) {
       throw notFound();
     }
-    res.json(versionToObject(row, config));
+    res.json(
+      versionToObject(
+        row,
+        config,
+        await versionDownloads(sql, row.namespace, row.extension_id, row.version),
+      ),
+    );
   });
 
   // A deprecation and a moderation decision are both edits to the version's own
@@ -610,7 +623,13 @@ export function makePackagesRouter({ sql, config, termsGate, rateLimiter, resolv
         actor: req.auth.user.namespace,
       });
     }
-    res.json(versionToObject(updated, config));
+    res.json(
+      versionToObject(
+        updated,
+        config,
+        await versionDownloads(sql, updated.namespace, updated.extension_id, updated.version),
+      ),
+    );
   }
 
   // A version awaiting approval is stored as the compiler produced it, so a
@@ -690,7 +709,13 @@ export function makePackagesRouter({ sql, config, termsGate, rateLimiter, resolv
         occurredAt: new Date().toISOString(),
         actor: req.auth.user.namespace,
       });
-      return res.json(versionToObject(updated, config));
+      return res.json(
+        versionToObject(
+          updated,
+          config,
+          await versionDownloads(sql, updated.namespace, updated.extension_id, updated.version),
+        ),
+      );
     }
 
     // Minify before the transaction so the CPU-bound pass does not hold the row
@@ -766,7 +791,13 @@ export function makePackagesRouter({ sql, config, termsGate, rateLimiter, resolv
       occurredAt: new Date().toISOString(),
       actor: req.auth.user.namespace,
     });
-    res.json(versionToObject(updated, config));
+    res.json(
+      versionToObject(
+        updated,
+        config,
+        await versionDownloads(sql, updated.namespace, updated.extension_id, updated.version),
+      ),
+    );
   }
 
   router.patch('/@:namespace/:id/versions/:version', requireAuth, termsGate, async (req, res) => {
@@ -1308,9 +1339,10 @@ export function makePackagesRouter({ sql, config, termsGate, rateLimiter, resolv
     if (rows.length === 0) throw notFound();
     const versions = [...rows].sort((a, b) => compareSemver(b.version, a.version));
     const top = versions.find((row) => row.status === 'published') ?? versions[0];
+    const totals = await versionDownloadTotals(sql, namespace, id);
     const summary = extensionDetailFromRow(
       top,
-      versions.map((row) => versionToObject(row, config)),
+      versions.map((row) => versionToObject(row, config, totals.get(row.version) ?? 0n)),
     );
     summary.downloads = await totalDownloads(sql, namespace, id);
     res.json(summary);

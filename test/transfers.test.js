@@ -453,6 +453,11 @@ describe('what the move carries', () => {
       INSERT INTO extension_daily_downloads (namespace, extension_id, day, total_downloads)
       VALUES (${ns}, 'hello', current_date, 7)
     `;
+    await sql`
+      INSERT INTO extension_version_daily_downloads
+        (namespace, extension_id, version, day, total_downloads)
+      VALUES (${ns}, 'hello', '1.0.0', current_date, 7)
+    `;
 
     const events = async (namespace) =>
       Number(
@@ -466,6 +471,14 @@ describe('what the move carries', () => {
         (
           await sql`SELECT COALESCE(SUM(total_downloads), 0)::int AS n
             FROM extension_daily_downloads
+            WHERE namespace = ${namespace} AND extension_id = 'hello'`
+        )[0].n,
+      );
+    const rolledByVersion = async (namespace) =>
+      Number(
+        (
+          await sql`SELECT COALESCE(SUM(total_downloads), 0)::int AS n
+            FROM extension_version_daily_downloads
             WHERE namespace = ${namespace} AND extension_id = 'hello'`
         )[0].n,
       );
@@ -509,6 +522,8 @@ describe('what the move carries', () => {
     assert.ok((await events(to)) > 0);
     assert.equal(await rolled(ns), 0);
     assert.equal(await rolled(to), 7);
+    assert.equal(await rolledByVersion(ns), 0);
+    assert.equal(await rolledByVersion(to), 7);
     assert.equal(
       Number(
         (

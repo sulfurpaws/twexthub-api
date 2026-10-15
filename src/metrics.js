@@ -33,6 +33,26 @@ export function aggregateDayLoader(sql) {
         total_downloads = EXCLUDED.total_downloads,
         distinct_downloads = EXCLUDED.distinct_downloads
     `;
+    await sql`
+      INSERT INTO extension_version_daily_downloads (namespace, extension_id, version, day, total_downloads, distinct_downloads)
+      SELECT
+        e.namespace,
+        e.extension_id,
+        e.version,
+        ${dayStart.toISOString()}::date AS day,
+        COUNT(*)::bigint AS total_downloads,
+        COUNT(
+          DISTINCT COALESCE(e.ip_hash, e.user_agent, '')
+        )::bigint AS distinct_downloads
+      FROM download_events e
+      WHERE e.created_at >= ${dayStart.toISOString()}
+        AND e.created_at < ${dayEnd.toISOString()}
+      GROUP BY e.namespace, e.extension_id, e.version
+      ON CONFLICT (namespace, extension_id, version, day)
+      DO UPDATE SET
+        total_downloads = EXCLUDED.total_downloads,
+        distinct_downloads = EXCLUDED.distinct_downloads
+    `;
   };
 }
 
@@ -112,4 +132,25 @@ export async function trendingExtensions(sql, { limit = 10 } = {}) {
     id: row.extension_id,
     downloads: row.downloads,
   }));
+}
+
+export async function versionDownloads(sql, namespace, extensionId, version) {
+  const rows = await sql`
+    SELECT COALESCE(SUM(total_downloads), 0)::bigint AS total
+    FROM extension_version_daily_downloads
+    WHERE namespace = ${namespace} AND extension_id = ${extensionId} AND version = ${version}
+  `;
+  return rows[0]?.total ?? 0n;
+}
+
+// Every version's count for one extension in a single query, so a version list
+// does not issue one statement per entry.
+export async function versionDownloadTotals(sql, namespace, extensionId) {
+  const rows = await sql`
+    SELECT version, COALESCE(SUM(total_downloads), 0)::bigint AS total
+    FROM extension_version_daily_downloads
+    WHERE namespace = ${namespace} AND extension_id = ${extensionId}
+    GROUP BY version
+  `;
+  return new Map(rows.map((row) => [row.version, row.total]));
 }

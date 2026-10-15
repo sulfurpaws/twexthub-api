@@ -9,10 +9,10 @@ import { makeWebhooks } from './webhooks.js';
 
 // `backgroundJobs` is off for the test suite. The jobs all run a pass
 // immediately, and their passes collide with the suite's own setup: the daily
-// aggregation locks extension_daily_downloads before reading download_events,
-// which is the reverse of the order a TRUNCATE takes the same two tables in, so
-// resetDb and a background pass deadlock. Tests that want a job build it
-// themselves and drive it directly.
+// aggregation locks the download rollups before reading download_events, which
+// is the reverse of the order a TRUNCATE takes those tables in, so resetDb and
+// a background pass deadlock. Tests that want a job build it themselves and
+// drive it directly.
 export async function bootstrap(
   config = loadConfig(),
   { backgroundJobs = true, storageProbe, resolveTarget } = {},
