@@ -28,8 +28,9 @@ export function makeAuthRouter({ sql, config, rateLimiter }) {
   // the callback has to present the same secret, so a callback minted in one
   // browser cannot be replayed into another. `Secure` only when the instance
   // is actually served over TLS, for the same reason the instance allows plain
-  // HTTP at all.
-  const flowCookie = 'twexthub_oidc_flow';
+  // HTTP at all. The cookie is named by the flow's state so concurrent flows
+  // do not overwrite each other's binding.
+  const flowCookieBase = 'twexthub_oidc_flow';
   const flowCookieOptions = {
     httpOnly: true,
     sameSite: 'lax',
@@ -37,8 +38,13 @@ export function makeAuthRouter({ sql, config, rateLimiter }) {
     path: mount('/auth'),
     maxAge: FLOW_TTL_MS,
   };
-  const setFlowCookie = (res, secret) => res.cookie(flowCookie, secret, flowCookieOptions);
-  const clearFlowCookie = (res) => res.clearCookie(flowCookie, flowCookieOptions);
+  const flowCookieName = (state) => {
+    if (typeof state !== 'string' || state === '') return flowCookieBase;
+    return `${flowCookieBase}_${state}`;
+  };
+  const setFlowCookie = (res, state, secret) =>
+    res.cookie(flowCookieName(state), secret, flowCookieOptions);
+  const clearFlowCookie = (res, state) => res.clearCookie(flowCookieName(state), flowCookieOptions);
 
   // What a sign-in page needs to render: whether password sign-in is offered,
   // and where the button for the provider should lead. Public, because it is
@@ -68,7 +74,7 @@ export function makeAuthRouter({ sql, config, rateLimiter }) {
       INSERT INTO oidc_flows (kind, state_hash, flow_secret_hash, code_verifier, nonce, return_to, expires_at)
       VALUES ('signin', ${hashToken(state)}, ${hashToken(binding)}, ${verifier}, ${nonce}, ${returnTo}, ${new Date(Date.now() + FLOW_TTL_MS)})
     `;
-    setFlowCookie(res, binding);
+    setFlowCookie(res, state, binding);
 
     if (wantsHtml(req)) return res.redirect(authorizationUrl);
     res.json({ authorizationUrl });
@@ -94,7 +100,7 @@ export function makeAuthRouter({ sql, config, rateLimiter }) {
     // same statement, so a callback carrying another browser's state does not
     // complete a sign-in for this one.
     const exchangeCode = newSecret();
-    const binding = readCookie(req, flowCookie);
+    const binding = readCookie(req, flowCookieName(state));
     const [flow] = await sql`
       UPDATE oidc_flows
       SET exchange_code_hash = ${hashToken(exchangeCode)}
@@ -113,7 +119,7 @@ export function makeAuthRouter({ sql, config, rateLimiter }) {
         'The sign-in attempt is unknown or has expired.',
       );
     }
-    clearFlowCookie(res);
+    clearFlowCookie(res, state);
 
     if (typeof providerError === 'string' && providerError !== '') {
       return failFlow(
@@ -203,7 +209,7 @@ export function makeAuthRouter({ sql, config, rateLimiter }) {
       INSERT INTO oidc_flows (kind, state_hash, flow_secret_hash, code_verifier, nonce, user_id, return_to, expires_at)
       VALUES ('link', ${hashToken(state)}, ${hashToken(binding)}, ${verifier}, ${nonce}, ${req.auth.user.id}, ${returnTo}, ${new Date(Date.now() + FLOW_TTL_MS)})
     `;
-    setFlowCookie(res, binding);
+    setFlowCookie(res, state, binding);
     res.json({ authorizationUrl });
   });
 
