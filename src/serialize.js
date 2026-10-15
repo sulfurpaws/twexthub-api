@@ -143,7 +143,7 @@ function versionLinks(config, row) {
   return links;
 }
 
-export function versionToObject(row, config, downloads) {
+export function versionToObject(row, config, downloads = 0) {
   const out = {
     namespace: row.namespace,
     id: row.extension_id,
@@ -153,7 +153,7 @@ export function versionToObject(row, config, downloads) {
     license: row.license,
     description: row.description,
     createdAt: row.created_at.toISOString(),
-    downloads: Number(downloads ?? row.downloads ?? 0),
+    downloads: Number(downloads),
   };
   if (row.author) out.author = row.author;
   if (row.published_at) out.publishedAt = row.published_at.toISOString();
