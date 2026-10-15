@@ -14,21 +14,48 @@ export function aggregateDayLoader(sql) {
   return async function aggregateDay(day = new Date()) {
     const dayStart = utcMidnight(day);
     const dayEnd = new Date(dayStart.getTime() + DAY_MS);
+    // One scan of the day's events feeds both rollups, so the extension and
+    // version counts are computed from the same snapshot rather than two reads
+    // that a concurrent download could fall between. The `events` CTE is
+    // referenced twice, so Postgres materializes it once; the data-modifying
+    // `"extension"` CTE runs alongside the primary version insert.
     await sql`
-      INSERT INTO extension_daily_downloads (namespace, extension_id, day, total_downloads, distinct_downloads)
+      WITH events AS (
+        SELECT
+          namespace,
+          extension_id,
+          version,
+          COALESCE(ip_hash, user_agent, '') AS client
+        FROM download_events
+        WHERE created_at >= ${dayStart.toISOString()}
+          AND created_at < ${dayEnd.toISOString()}
+      ),
+      "extension" AS (
+        INSERT INTO extension_daily_downloads (namespace, extension_id, day, total_downloads, distinct_downloads)
+        SELECT
+          namespace,
+          extension_id,
+          ${dayStart.toISOString()}::date AS day,
+          COUNT(*)::bigint AS total_downloads,
+          COUNT(DISTINCT client)::bigint AS distinct_downloads
+        FROM events
+        GROUP BY namespace, extension_id
+        ON CONFLICT (namespace, extension_id, day)
+        DO UPDATE SET
+          total_downloads = EXCLUDED.total_downloads,
+          distinct_downloads = EXCLUDED.distinct_downloads
+      )
+      INSERT INTO extension_version_daily_downloads (namespace, extension_id, version, day, total_downloads, distinct_downloads)
       SELECT
-        e.namespace,
-        e.extension_id,
+        namespace,
+        extension_id,
+        version,
         ${dayStart.toISOString()}::date AS day,
         COUNT(*)::bigint AS total_downloads,
-        COUNT(
-          DISTINCT COALESCE(e.ip_hash, e.user_agent, '')
-        )::bigint AS distinct_downloads
-      FROM download_events e
-      WHERE e.created_at >= ${dayStart.toISOString()}
-        AND e.created_at < ${dayEnd.toISOString()}
-      GROUP BY e.namespace, e.extension_id
-      ON CONFLICT (namespace, extension_id, day)
+        COUNT(DISTINCT client)::bigint AS distinct_downloads
+      FROM events
+      GROUP BY namespace, extension_id, version
+      ON CONFLICT (namespace, extension_id, version, day)
       DO UPDATE SET
         total_downloads = EXCLUDED.total_downloads,
         distinct_downloads = EXCLUDED.distinct_downloads
@@ -112,4 +139,25 @@ export async function trendingExtensions(sql, { limit = 10 } = {}) {
     id: row.extension_id,
     downloads: row.downloads,
   }));
+}
+
+export async function versionDownloads(sql, namespace, extensionId, version) {
+  const rows = await sql`
+    SELECT COALESCE(SUM(total_downloads), 0)::bigint AS total
+    FROM extension_version_daily_downloads
+    WHERE namespace = ${namespace} AND extension_id = ${extensionId} AND version = ${version}
+  `;
+  return rows[0]?.total ?? 0n;
+}
+
+// Every version's count for one extension in a single query, so a version list
+// does not issue one statement per entry.
+export async function versionDownloadTotals(sql, namespace, extensionId) {
+  const rows = await sql`
+    SELECT version, COALESCE(SUM(total_downloads), 0)::bigint AS total
+    FROM extension_version_daily_downloads
+    WHERE namespace = ${namespace} AND extension_id = ${extensionId}
+    GROUP BY version
+  `;
+  return new Map(rows.map((row) => [row.version, row.total]));
 }

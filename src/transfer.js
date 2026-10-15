@@ -23,6 +23,7 @@ const MOVED_TABLES = [
   'webhooks',
   'download_events',
   'extension_daily_downloads',
+  'extension_version_daily_downloads',
 ];
 
 // The subset whose key includes the address and would therefore collide if the

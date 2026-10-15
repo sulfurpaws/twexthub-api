@@ -232,6 +232,7 @@ export function makeOrgsRouter({
         'extension_owner_invites',
         'download_events',
         'extension_daily_downloads',
+        'extension_version_daily_downloads',
       ]) {
         await tx`DELETE FROM ${tx(table)} WHERE namespace = ${org.namespace}`;
       }

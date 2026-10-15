@@ -311,6 +311,8 @@ describe('changing an organization', () => {
         VALUES (${namespace}, 'cleanup', '1.0.0')`;
       await sql`INSERT INTO extension_daily_downloads (namespace, extension_id, day)
         VALUES (${namespace}, 'cleanup', current_date)`;
+      await sql`INSERT INTO extension_version_daily_downloads (namespace, extension_id, version, day)
+        VALUES (${namespace}, 'cleanup', '1.0.0', current_date)`;
     }
     for (const [from, to] of [
       [ns, outside],
@@ -334,6 +336,7 @@ describe('changing an organization', () => {
       'extension_owner_invites',
       'download_events',
       'extension_daily_downloads',
+      'extension_version_daily_downloads',
       'extension_transfers',
     ]) {
       const rows = await sql`SELECT namespace FROM ${sql(table)}`;
