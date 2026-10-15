@@ -249,28 +249,31 @@ export function makeWebhooks({ sql, resolveTarget = assertPublicWebhookUrl }) {
   // Body and signature are copied verbatim because they were signed with a
   // secret that does not change.
   async function redeliver(namespace, extensionId, webhookId, deliveryId) {
-    const [delivery] = await sql`
-      SELECT d.status
-      FROM webhook_deliveries d
-      JOIN webhooks w ON w.id = d.webhook_id
-      WHERE d.id = ${deliveryId} AND d.webhook_id = ${webhookId}
-        AND w.namespace = ${namespace}
-        AND w.extension_id IS NOT DISTINCT FROM ${extensionId}
-    `;
-    if (!delivery) throw notFound('No such delivery.');
-    // A delivery still queued or in flight is already on its way out; a second
-    // copy now would put the receiver through it twice.
-    if (delivery.status !== 'delivered' && delivery.status !== 'failed') {
-      throw conflict('That delivery has not finished yet.');
-    }
-    const [row] = await sql`
-      INSERT INTO webhook_deliveries (webhook_id, event, payload, body, signature, max_attempts)
-      SELECT webhook_id, event, payload, body, signature, max_attempts
-      FROM webhook_deliveries WHERE id = ${deliveryId}
-      RETURNING id, event, payload, attempt, max_attempts, status, next_attempt_at,
-                last_error, created_at, updated_at
-    `;
-    return row;
+    return await sql.begin(async (sql) => {
+      const [delivery] = await sql`
+        SELECT d.status
+        FROM webhook_deliveries d
+        JOIN webhooks w ON w.id = d.webhook_id
+        WHERE d.id = ${deliveryId} AND d.webhook_id = ${webhookId}
+          AND w.namespace = ${namespace}
+          AND w.extension_id IS NOT DISTINCT FROM ${extensionId}
+        FOR UPDATE OF d
+      `;
+      if (!delivery) throw notFound('No such delivery.');
+      // A delivery still queued or in flight is already on its way out; a second
+      // copy now would put the receiver through it twice.
+      if (delivery.status !== 'delivered' && delivery.status !== 'failed') {
+        throw conflict('That delivery has not finished yet.');
+      }
+      const [row] = await sql`
+        INSERT INTO webhook_deliveries (webhook_id, event, payload, body, signature, max_attempts)
+        SELECT webhook_id, event, payload, body, signature, max_attempts
+        FROM webhook_deliveries WHERE id = ${deliveryId}
+        RETURNING id, event, payload, attempt, max_attempts, status, next_attempt_at,
+                  last_error, created_at, updated_at
+      `;
+      return row;
+    });
   }
 
   async function scheduleFor(namespace, extensionId, event, basePayload) {
