@@ -13,27 +13,27 @@ const PATTERNS = [
     code: 'fetch',
     // A member call is left alone: Scratch.fetch() is the sandboxed wrapper
     // TurboWarp asks extensions to use, so flagging it would be noise.
-    match: /(?<!\.)\bfetch\s*\(/,
+    match: /(?<!\.)\bfetch\s*\(/g,
     message: 'Calls fetch() directly; prefer Scratch.fetch().',
   },
   {
     code: 'eval',
-    match: /\beval\s*\(/,
+    match: /\beval\s*\(/g,
     message: 'Runs a string as code with eval().',
   },
   {
     code: 'new-function',
-    match: /\bnew\s+Function\b/,
+    match: /\bnew\s+Function\b/g,
     message: 'Builds a function from a string with new Function().',
   },
   {
     code: 'xmlhttprequest',
-    match: /\bXMLHttpRequest\b/,
+    match: /\bXMLHttpRequest\b/g,
     message: 'Opens a raw XMLHttpRequest instead of using Scratch.fetch().',
   },
   {
     code: 'insecure-http',
-    match: /http:\/\//,
+    match: /http:\/\//g,
     message: 'References a plaintext http:// URL.',
   },
 ];
@@ -43,7 +43,10 @@ const PATTERNS = [
 // the tarball reader has already checked stays inside projectDir.
 export async function scanSourceWarnings(projectDir, files) {
   const warnings = [];
-  for (const file of [...files].sort()) {
+  // The tarball reader reports every accepted entry, so a tarball with
+  // duplicate names lists a path twice. Dedupe before scanning or the second
+  // pass repeats each warning and eats into the cap.
+  for (const file of [...new Set(files)].sort()) {
     if (!SOURCE_EXTENSIONS.has(path.extname(file).toLowerCase())) continue;
     let text;
     try {
@@ -51,18 +54,37 @@ export async function scanSourceWarnings(projectDir, files) {
     } catch {
       continue;
     }
-    const lines = text.split('\n');
-    for (let index = 0; index < lines.length; index++) {
-      for (const pattern of PATTERNS) {
-        if (!pattern.match.test(lines[index])) continue;
-        warnings.push({
-          code: pattern.code,
-          file,
-          line: index + 1,
-          message: pattern.message,
-        });
-        if (warnings.length >= MAX_WARNINGS) return warnings;
+    const found = [];
+    for (let order = 0; order < PATTERNS.length; order++) {
+      const pattern = PATTERNS[order];
+      // Matching the whole text lets `\s` span a newline, so an expression
+      // broken across lines (`fetch(\n...)`, `new\nFunction`) is still caught.
+      // Matches arrive in order, so the line counter only moves forward and a
+      // line that already produced a hit is skipped.
+      let line = 1;
+      let nextNewline = text.indexOf('\n');
+      let lastLine = 0;
+      for (const match of text.matchAll(pattern.match)) {
+        while (nextNewline !== -1 && match.index > nextNewline) {
+          line += 1;
+          nextNewline = text.indexOf('\n', nextNewline + 1);
+        }
+        if (line === lastLine) continue;
+        lastLine = line;
+        found.push({ order, line, code: pattern.code, message: pattern.message });
+        if (found.length >= MAX_WARNINGS) break;
       }
+    }
+    // Read in source order: top to bottom, and within a line the pattern order.
+    found.sort((a, b) => a.line - b.line || a.order - b.order);
+    for (const warning of found) {
+      warnings.push({
+        code: warning.code,
+        file,
+        line: warning.line,
+        message: warning.message,
+      });
+      if (warnings.length >= MAX_WARNINGS) return warnings;
     }
   }
   return warnings;

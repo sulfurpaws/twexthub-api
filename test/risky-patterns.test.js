@@ -95,3 +95,38 @@ test('caps the report so a minified file cannot produce an unbounded row', async
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test('scans a path listed twice only once', async () => {
+  const dir = await writeProject({ 'src/index.js': 'eval("x");\n' });
+  try {
+    const once = await scanSourceWarnings(dir, ['src/index.js']);
+    const twice = await scanSourceWarnings(dir, ['src/index.js', 'src/index.js']);
+    assert.deepEqual(twice, once);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test('catches risky patterns split across lines', async () => {
+  const dir = await writeProject({
+    'src/index.js': [
+      'const body = fetch',
+      '  ("http://example.com");',
+      'const build = new',
+      '  Function("return 1");',
+    ].join('\n'),
+  });
+  try {
+    const warnings = await scanSourceWarnings(dir, ['src/index.js']);
+    assert.deepEqual(
+      warnings.map((warning) => [warning.code, warning.line]),
+      [
+        ['fetch', 1],
+        ['insecure-http', 2],
+        ['new-function', 3],
+      ],
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
