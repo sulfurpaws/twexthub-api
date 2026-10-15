@@ -93,6 +93,210 @@ paths:
               schema: { $ref: '#/components/schemas/User' }
         '401': { $ref: '#/components/responses/Unauthorized' }
 
+  # ------------------------------------------ Authentication & sign-in
+  /auth:
+    get:
+      summary: Describe how this instance signs users in
+      operationId: getAuthDescriptor
+      tags: [Open]
+      security: []
+      description: >
+        Public, because a sign-in page reads it before anybody has signed in.
+        `passwordAuth` is false when the instance is in identity-provider-only
+        mode; `oidc` is null when no provider is configured.
+      responses:
+        '200':
+          description: The available sign-in methods
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthDescriptor' }
+
+  /auth/oidc/authorize:
+    get:
+      summary: Start a sign-in through the identity provider
+      operationId: oidcAuthorize
+      tags: [Open]
+      security: []
+      description: >
+        Begins the Authorization Code + PKCE flow. A browser (an `Accept:
+        text/html` request) is redirected to the provider; any other client gets
+        the URL to send the browser to itself. `returnTo` is where the browser
+        is sent once the provider hands it back — a path on this instance, or an
+        absolute URL naming an origin in `cors.allowedOrigins`. Anything else is
+        refused, so an authorize link cannot be turned into a way to hand a
+        freshly minted sign-in code to another origin.
+      parameters:
+        - $ref: '#/components/parameters/ReturnTo'
+      responses:
+        '200':
+          description: The authorization URL to send the browser to
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [authorizationUrl]
+                properties:
+                  authorizationUrl: { type: string, format: uri }
+        '302':
+          description: A browser is redirected to the provider
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+
+  /auth/oidc/callback:
+    get:
+      summary: Where the provider sends the browser back
+      operationId: oidcCallback
+      tags: [Open]
+      security: []
+      description: >
+        Completes the sign-in or link started by an authorize request. The
+        `state` is single-use: the callback that claims it is the only one that
+        can, so a replayed callback is refused. A browser is redirected to
+        `returnTo` with a one-time `oidc_code` (and `oidc_linked=1` for a link)
+        or `oidc_error=<slug>` on failure; an API client receives the session
+        directly. The session token is never carried in a URL.
+      parameters:
+        - name: code
+          in: query
+          schema: { type: string }
+        - name: state
+          in: query
+          required: true
+          schema: { type: string }
+        - name: error
+          in: query
+          schema: { type: string }
+      responses:
+        '201':
+          description: The session that was created, its owner, and its one-time token
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthSession' }
+        '200':
+          description: The identity that was linked
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [linked]
+                properties:
+                  linked: { type: boolean }
+                  issuer: { type: string }
+                  subject: { type: string }
+        '302':
+          description: A browser is redirected back to `returnTo`
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '502': { $ref: '#/components/responses/BadGateway' }
+
+  /auth/oidc/exchange:
+    post:
+      summary: Trade a browser's one-time code for a session
+      operationId: oidcExchange
+      tags: [Open]
+      security: []
+      description: >
+        The browser cannot read an Authorization header off a redirect, so the
+        callback sends it back with a one-time `code`; this trades that code for
+        the session. The code is consumed on first use.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code: { type: string }
+      responses:
+        '201':
+          description: The session, its owner, and its one-time token
+          headers:
+            Location:
+              description: The new session's own URL
+              schema: { type: string }
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AuthSession' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /auth/oidc/link:
+    post:
+      summary: Link the identity provider to the signed-in account
+      operationId: oidcLink
+      tags: [Userspace]
+      description: >
+        Starts an authorize round-trip whose callback links the provider
+        identity to the caller's account. Session-authenticated rather than open
+        to automation tokens: linking is a lasting change to how the account can
+        be signed into, which a credential should not be able to make.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                returnTo: { type: string }
+      responses:
+        '200':
+          description: The authorization URL to send the browser to
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [authorizationUrl]
+                properties:
+                  authorizationUrl: { type: string, format: uri }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '422': { $ref: '#/components/responses/UnprocessableEntity' }
+
+  /auth/oidc/identities:
+    get:
+      summary: List the account's linked identities
+      operationId: listOidcIdentities
+      tags: [Userspace]
+      description: >
+        Not gated on the provider still being configured: an operator who turns
+        the provider off leaves accounts needing a way to see and remove what
+        they had linked.
+      responses:
+        '200':
+          description: The caller's linked identities
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/OidcIdentity' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /auth/oidc/identities/{id}:
+    parameters:
+      - name: id
+        in: path
+        required: true
+        schema: { type: string, pattern: '^[0-9]+$' }
+        description: Identity id, as a string so it survives a JSON parser that keeps numbers exact.
+    delete:
+      summary: Remove a linked identity from the account
+      operationId: deleteOidcIdentity
+      tags: [Userspace]
+      description: >
+        Removing the last way into an account is refused with a `409`: a
+        password that still works counts as a way in, but one the instance no
+        longer accepts does not.
+      responses:
+        '204': { description: Removed }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
   # ---------------------------------------------- Sessions & automation tokens
   /sessions:
     post:
@@ -102,11 +306,13 @@ paths:
       security: []
       description: >
         Signing in is creating a session, so the credentials ride in the body
-        rather than a namespace in the path. The plaintext `token` is shown
+        rather than a namespace in the path.         The plaintext `token` is shown
         once here and never again: only its hash is stored. A namespace that
         belongs to an organization is a `403` here rather than a bad password:
         an organization has no credentials of its own, and is acted for by its
-        owners instead.
+        owners instead. When the instance is in identity-provider-only mode
+        (`auth.oidc.required`), password sign-in is refused with a `403`.
+
       requestBody:
         required: true
         content:
@@ -332,7 +538,9 @@ paths:
         Creating the account and signing in are the same act, so the response
         carries a session too: the new user, the session opened for it, and the
         plaintext token to use for both. The first account ever created becomes
-        an admin.
+        an admin. When the instance is in identity-provider-only mode
+        (`auth.oidc.required`), registration here is refused with a `403` and
+        accounts are made by signing in through the provider instead.
       requestBody:
         required: true
         content:
@@ -2656,6 +2864,16 @@ components:
       in: query
       schema: { $ref: '#/components/schemas/Namespace' }
       description: Only extensions published under this account or organization.
+    ReturnTo:
+      name: returnTo
+      in: query
+      required: false
+      schema: { type: string }
+      description: >
+        Where the browser is sent once the provider hands it back. Either a path
+        on this instance (starting with a single `/`), or an absolute URL whose
+        origin is this instance's `publicBaseUrl` or one listed in
+        `cors.allowedOrigins`. Anything else is refused with a `422`.
 
   schemas:
     Namespace:
@@ -2757,6 +2975,47 @@ components:
         createdAt: { type: string, format: date-time }
         expiresAt: { type: string, format: date-time, description: '7 days after creation.' }
         lastUsedAt: { type: ['string', 'null'], format: date-time }
+
+    AuthSession:
+      type: object
+      required: [session, user, token]
+      properties:
+        session: { $ref: '#/components/schemas/Session' }
+        user: { $ref: '#/components/schemas/User' }
+        token:
+          type: string
+          description: The bearer token secret. Shown only in this one response.
+
+    AuthDescriptor:
+      type: object
+      required: [passwordAuth, oidc]
+      properties:
+        passwordAuth:
+          type: boolean
+          description: Whether namespace/password sign-in and registration are offered.
+        oidc:
+          type: ['object', 'null']
+          description: The configured identity provider, or `null` when none is set.
+          required: [issuer, required]
+          properties:
+            issuer: { type: string, format: uri }
+            required:
+              type: boolean
+              description: When true, the provider is the only way to get an account.
+
+    OidcIdentity:
+      type: object
+      required: [id, issuer, subject, email, createdAt]
+      properties:
+        id: { type: string }
+        issuer: { type: string, format: uri }
+        subject:
+          type: string
+          description: The provider's `sub`. Together with `issuer` this is what identifies the account.
+        email:
+          type: ['string', 'null']
+          description: Kept for reference only; accounts are never matched or linked by email.
+        createdAt: { type: string, format: date-time }
 
     AutomationToken:
       type: object
@@ -3212,6 +3471,9 @@ components:
       description: Rate limit exceeded
       headers:
         Retry-After: { schema: { type: integer } }
+      content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
+    BadGateway:
+      description: The identity provider could not be reached, refused the request, or returned a token that failed verification
       content: { application/problem+json: { schema: { $ref: '#/components/schemas/Problem' } } }
 
   securitySchemes:

@@ -192,7 +192,7 @@ export async function resetDb() {
   await sql.unsafe(`
     TRUNCATE TABLE automation_tokens, sessions, versions, rate_limit_entries, notifications,
     users, legal_documents, download_events, extension_daily_downloads, dist_tags,
-    webhook_deliveries, webhooks
+    webhook_deliveries, webhooks, user_identities, oidc_flows
     RESTART IDENTITY CASCADE
   `);
   await sql`

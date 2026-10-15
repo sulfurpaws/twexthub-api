@@ -9,6 +9,7 @@ import { makeCors } from './cors.js';
 import { HttpError, notFound, errorHandler } from './errors.js';
 import { normalizeApiRoot } from './util.js';
 import { makeMeRouter } from './routes/me.js';
+import { makeAuthRouter } from './routes/auth.js';
 import { makeSessionsRouter } from './routes/sessions.js';
 import { makeTokensRouter } from './routes/tokens.js';
 import { makeUsersRouter } from './routes/users.js';
@@ -79,6 +80,7 @@ export function createApp(opts = {}) {
   const discovery = makeDiscoveryRouter(shared);
 
   app.use(mount('/sessions'), makeSessionsRouter(shared));
+  app.use(mount('/auth'), makeAuthRouter(shared));
   app.use(mount('/tokens'), makeTokensRouter(shared));
   app.use(mount('/users'), makeUsersRouter(shared));
   app.use(mount('/orgs'), makeOrgsRouter({ ...shared, listExtensions: discovery.listExtensions }));

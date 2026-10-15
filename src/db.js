@@ -133,6 +133,7 @@ export async function reconcileOnBoot(sql, config) {
   await sql`DELETE FROM rate_limit_entries WHERE window_start < ${rateCutoff}`;
 
   await sql`DELETE FROM sessions WHERE expires_at < now()`;
+  await sql`DELETE FROM oidc_flows WHERE expires_at < now()`;
 
   // Pre-digest rows (published before the blob_digest migration) point at
   // legacy namespace/blob paths. Re-key them to content-addressed digests so
