@@ -63,6 +63,7 @@ import { compileProject } from '../compiler.js';
 import { minifyCode, MINIFY_INPUT_MAX_BYTES } from '../minify.js';
 import { totalDownloads, hashDownloadAddress } from '../metrics.js';
 import { makeWebhooks, WebhookInputError } from '../webhooks.js';
+import { makeWebhookDeliveryRoutes } from './webhook-deliveries.js';
 import { audit, auditSoon } from '../audit.js';
 import { decodeCursor, offsetPage, parseLimit } from '../pagination.js';
 
@@ -86,6 +87,7 @@ export function makePackagesRouter({ sql, config, termsGate, rateLimiter, resolv
   // resolves it against the wrong origin.
   const mount = (path) => `${root ? `/${root}` : ''}${path}`;
   const webhooks = makeWebhooks({ sql, resolveTarget });
+  const webhookDeliveries = makeWebhookDeliveryRoutes({ webhooks, config });
 
   const yankChain = [requireAuth, termsGate, requireScope('yank')];
   const ownerChain = [requireAuth, termsGate];
@@ -460,6 +462,28 @@ export function makePackagesRouter({ sql, config, termsGate, rateLimiter, resolv
     if (!removed) throw notFound();
     res.status(204).end();
   });
+
+  router.get('/@:namespace/:id/webhooks/:webhookId/deliveries', publishChain, async (req, res) => {
+    const { namespace, id } = req.params;
+    if (!isValidNamespace(namespace) || !isValidExtensionId(id)) throw notFound();
+    if (!(await isExtensionOwner(req.auth.user, namespace, id))) {
+      throw forbidden('Only an owner or an admin can view webhook deliveries.');
+    }
+    await webhookDeliveries.list(req, res, { namespace, extensionId: id });
+  });
+
+  router.post(
+    '/@:namespace/:id/webhooks/:webhookId/deliveries/:deliveryId/redeliver',
+    publishChain,
+    async (req, res) => {
+      const { namespace, id } = req.params;
+      if (!isValidNamespace(namespace) || !isValidExtensionId(id)) throw notFound();
+      if (!(await isExtensionOwner(req.auth.user, namespace, id))) {
+        throw forbidden('Only an owner or an admin can redeliver a webhook.');
+      }
+      await webhookDeliveries.redeliver(req, res, { namespace, extensionId: id });
+    },
+  );
 
   router.get('/@:namespace/:id/tags', async (req, res) => {
     const { namespace, id } = req.params;

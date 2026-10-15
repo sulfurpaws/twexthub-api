@@ -15,6 +15,7 @@ import { notifyUser, roleChangedMessage, tokensRevokedMessage } from '../notify.
 import { createSession, requireObjectBody } from './shared.js';
 import { makeProfileImageRouter } from './profile-images.js';
 import { makeWebhooks, WebhookInputError } from '../webhooks.js';
+import { makeWebhookDeliveryRoutes } from './webhook-deliveries.js';
 import { audit } from '../audit.js';
 
 export function makeUsersRouter({ sql, config, termsGate, rateLimiter, resolveTarget }) {
@@ -431,6 +432,7 @@ export function makeUsersRouter({ sql, config, termsGate, rateLimiter, resolveTa
   // collection and is unchanged. An organization is what /orgs manages, so a
   // namespace that belongs to one is directed there rather than answered here.
   const webhooks = makeWebhooks({ sql, resolveTarget });
+  const webhookDeliveries = makeWebhookDeliveryRoutes({ webhooks, config });
   const accountWebhookChain = [manageAccount, termsGate];
 
   router.get('/:namespace/webhooks', accountWebhookChain, async (req, res) => {
@@ -479,6 +481,27 @@ export function makeUsersRouter({ sql, config, termsGate, rateLimiter, resolveTa
     );
     res.status(204).end();
   });
+
+  router.get(
+    '/:namespace/webhooks/:webhookId/deliveries',
+    accountWebhookChain,
+    async (req, res) => {
+      const target = await loadUserForWrite(sql, req);
+      await webhookDeliveries.list(req, res, { namespace: target.namespace, extensionId: null });
+    },
+  );
+
+  router.post(
+    '/:namespace/webhooks/:webhookId/deliveries/:deliveryId/redeliver',
+    accountWebhookChain,
+    async (req, res) => {
+      const target = await loadUserForWrite(sql, req);
+      await webhookDeliveries.redeliver(req, res, {
+        namespace: target.namespace,
+        extensionId: null,
+      });
+    },
+  );
 
   return router;
 }

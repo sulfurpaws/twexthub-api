@@ -764,10 +764,7 @@ paths:
   /users/{namespace}/webhooks/{webhookId}:
     parameters:
       - $ref: '#/components/parameters/NamespacePath'
-      - name: webhookId
-        in: path
-        required: true
-        schema: { type: integer }
+      - $ref: '#/components/parameters/WebhookIdPath'
     delete:
       summary: Delete an account webhook
       operationId: deleteAccountWebhook
@@ -780,6 +777,63 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+
+  /users/{namespace}/webhooks/{webhookId}/deliveries:
+    parameters:
+      - $ref: '#/components/parameters/NamespacePath'
+      - $ref: '#/components/parameters/WebhookIdPath'
+    get:
+      summary: List an account webhook's recent deliveries
+      operationId: listAccountWebhookDeliveries
+      tags: [Userspace]
+      description: >
+        The account itself, or an admin. Newest first, cursor-paged. The signed
+        body is not returned; `payload` is the object it was built from.
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Dir'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Paginated deliveries
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, _links]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/WebhookDelivery' }
+                  _links: { $ref: '#/components/schemas/PageLinks' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /users/{namespace}/webhooks/{webhookId}/deliveries/{deliveryId}/redeliver:
+    parameters:
+      - $ref: '#/components/parameters/NamespacePath'
+      - $ref: '#/components/parameters/WebhookIdPath'
+      - $ref: '#/components/parameters/DeliveryIdPath'
+    post:
+      summary: Redeliver an account webhook's delivery
+      operationId: redeliverAccountWebhook
+      tags: [Userspace]
+      description: >
+        The account itself, or an admin. Queues the same signed body as another
+        delivery instead of resetting the original, so the attempt it re-runs
+        stays in the log. A delivery still queued or in flight is a `409`.
+      responses:
+        '202':
+          description: Queued for delivery
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebhookDelivery' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
 
   /users/{namespace}/avatar:
     parameters:
@@ -1245,10 +1299,7 @@ paths:
   /orgs/{namespace}/webhooks/{webhookId}:
     parameters:
       - $ref: '#/components/parameters/NamespacePath'
-      - name: webhookId
-        in: path
-        required: true
-        schema: { type: integer }
+      - $ref: '#/components/parameters/WebhookIdPath'
     delete:
       summary: Delete an organization webhook
       operationId: deleteOrganizationWebhook
@@ -1261,6 +1312,63 @@ paths:
         '401': { $ref: '#/components/responses/Unauthorized' }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+
+  /orgs/{namespace}/webhooks/{webhookId}/deliveries:
+    parameters:
+      - $ref: '#/components/parameters/NamespacePath'
+      - $ref: '#/components/parameters/WebhookIdPath'
+    get:
+      summary: List an organization webhook's recent deliveries
+      operationId: listOrganizationWebhookDeliveries
+      tags: [Userspace]
+      description: >
+        Any owner, or an admin. Newest first, cursor-paged. The signed body is
+        not returned; `payload` is the object it was built from.
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Dir'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Paginated deliveries
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, _links]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/WebhookDelivery' }
+                  _links: { $ref: '#/components/schemas/PageLinks' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /orgs/{namespace}/webhooks/{webhookId}/deliveries/{deliveryId}/redeliver:
+    parameters:
+      - $ref: '#/components/parameters/NamespacePath'
+      - $ref: '#/components/parameters/WebhookIdPath'
+      - $ref: '#/components/parameters/DeliveryIdPath'
+    post:
+      summary: Redeliver an organization webhook's delivery
+      operationId: redeliverOrganizationWebhook
+      tags: [Userspace]
+      description: >
+        Any owner, or an admin. Queues the same signed body as another delivery
+        instead of resetting the original, so the attempt it re-runs stays in
+        the log. A delivery still queued or in flight is a `409`.
+      responses:
+        '202':
+          description: Queued for delivery
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebhookDelivery' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
 
   /orgs/{namespace}/avatar:
     parameters:
@@ -2328,10 +2436,7 @@ paths:
     parameters:
       - $ref: '#/components/parameters/NamespacePath'
       - $ref: '#/components/parameters/ExtensionIdPath'
-      - name: webhookId
-        in: path
-        required: true
-        schema: { type: integer }
+      - $ref: '#/components/parameters/WebhookIdPath'
     delete:
       summary: Delete a webhook
       operationId: deleteWebhook
@@ -2341,6 +2446,63 @@ paths:
         '204': { description: Deleted }
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
+
+  /@{namespace}/{id}/webhooks/{webhookId}/deliveries:
+    parameters:
+      - $ref: '#/components/parameters/NamespacePath'
+      - $ref: '#/components/parameters/ExtensionIdPath'
+      - $ref: '#/components/parameters/WebhookIdPath'
+    get:
+      summary: List a webhook's recent deliveries
+      operationId: listWebhookDeliveries
+      tags: [Userspace]
+      description: >
+        Owner or admin. Newest first, cursor-paged. The signed body is not
+        returned; `payload` is the object it was built from.
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Dir'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Paginated deliveries
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, _links]
+                properties:
+                  data:
+                    type: array
+                    items: { $ref: '#/components/schemas/WebhookDelivery' }
+                  _links: { $ref: '#/components/schemas/PageLinks' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /@{namespace}/{id}/webhooks/{webhookId}/deliveries/{deliveryId}/redeliver:
+    parameters:
+      - $ref: '#/components/parameters/NamespacePath'
+      - $ref: '#/components/parameters/ExtensionIdPath'
+      - $ref: '#/components/parameters/WebhookIdPath'
+      - $ref: '#/components/parameters/DeliveryIdPath'
+    post:
+      summary: Redeliver a delivery
+      operationId: redeliverWebhook
+      tags: [Userspace]
+      description: >
+        Owner or admin. Queues the same signed body as another delivery instead
+        of resetting the original, so the attempt it re-runs stays in the log.
+        A delivery still queued or in flight is a `409`.
+      responses:
+        '202':
+          description: Queued for delivery
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/WebhookDelivery' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409': { $ref: '#/components/responses/Conflict' }
 
   /@{namespace}/{id}/versions/{version}:
     parameters:
@@ -2843,6 +3005,16 @@ components:
       schema:
         type: string
         description: SemVer string, a dist-tag name, or the literal `latest`.
+    WebhookIdPath:
+      name: webhookId
+      in: path
+      required: true
+      schema: { type: integer }
+    DeliveryIdPath:
+      name: deliveryId
+      in: path
+      required: true
+      schema: { type: integer }
     NotificationId:
       name: id
       in: path
@@ -3336,6 +3508,45 @@ components:
           properties:
             secret:
               { type: string, description: Signs deliveries; shown only in this one response. }
+
+    WebhookDelivery:
+      type: object
+      description: >
+        One event scheduled for one webhook, with the outcome of its attempts so
+        far. `attempt` counts attempts on this row, so it starts at `0`; a
+        retry writes the same row and raises it. The signed body is not part of
+        the representation.
+      required:
+        [
+          id,
+          event,
+          payload,
+          attempt,
+          max_attempts,
+          status,
+          next_attempt_at,
+          last_error,
+          created_at,
+          updated_at,
+        ]
+      properties:
+        id: { type: integer }
+        event: { $ref: '#/components/schemas/WebhookEvent' }
+        payload: { type: object, description: The event payload the signed body was built from. }
+        attempt: { type: integer, description: Attempts made so far. }
+        max_attempts:
+          { type: integer, description: Attempts allowed before the delivery is failed. }
+        status:
+          type: string
+          enum: [pending, delivering, retrying, delivered, failed]
+        next_attempt_at:
+          type: ['string', 'null']
+          format: date-time
+          description: When the next attempt is due, or `null` once it has finished.
+        last_error:
+          { type: ['string', 'null'], description: Why the last attempt failed, or `null`. }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
 
     AuditEntry:
       type: object

@@ -13,6 +13,7 @@ import { addedAsOrgOwnerMessage, notifyUser, removedAsOrgOwnerMessage } from '..
 import { requireObjectBody } from './shared.js';
 import { makeProfileImageRouter } from './profile-images.js';
 import { makeWebhooks, WebhookInputError } from '../webhooks.js';
+import { makeWebhookDeliveryRoutes } from './webhook-deliveries.js';
 import { profileFieldErrors, profilePatch } from '../profile.js';
 import { audit } from '../audit.js';
 
@@ -41,6 +42,7 @@ export function makeOrgsRouter({
   // it may act for *this* one is `loadOrgForWrite`'s job, and it runs after.
   const manageOrgs = requireScope('manage:orgs');
   const webhooks = makeWebhooks({ sql, resolveTarget });
+  const webhookDeliveries = makeWebhookDeliveryRoutes({ webhooks, config });
   const apiRoot = normalizeApiRoot(config.apiRoot);
   const orgPath = (namespace) =>
     `${apiRoot ? `/${apiRoot}` : ''}/orgs/${encodeURIComponent(namespace)}`;
@@ -456,6 +458,20 @@ export function makeOrgsRouter({
     );
     res.status(204).end();
   });
+
+  router.get('/:namespace/webhooks/:webhookId/deliveries', ...manageChain, async (req, res) => {
+    const org = await loadOrgForWrite(req);
+    await webhookDeliveries.list(req, res, { namespace: org.namespace, extensionId: null });
+  });
+
+  router.post(
+    '/:namespace/webhooks/:webhookId/deliveries/:deliveryId/redeliver',
+    ...manageChain,
+    async (req, res) => {
+      const org = await loadOrgForWrite(req);
+      await webhookDeliveries.redeliver(req, res, { namespace: org.namespace, extensionId: null });
+    },
+  );
 
   // Avatars and banners behave exactly as they do for an account, down to the
   // cached URL and the identicon fallback; only the owner list decides who may
