@@ -1958,7 +1958,8 @@ paths:
         `package.json` with `"type": "module"`). The server validates the
         manifest against the path, compiles the project in a sandboxed child
         process (no network, bounded filesystem/memory/time), and stages the
-        result for moderation; the build log rides along in the queue entry.
+        result for moderation; the build log and any static-analysis `warnings`
+        ride along in the queue entry.
         A caller's first-ever publish is held as `pending`; once an admin
         approves it, later publishes go straight to `published`. Only one
         `pending`/`staging` version per owner may exist at a time. The
@@ -3405,6 +3406,23 @@ components:
         buildLog:
           type: string
           description: Compiler output; returned on publish responses and queue entries.
+        warnings:
+          type: array
+          description: >
+            Static-analysis hits from the uploaded source, present only when the
+            scan found something. Returned on the publish response and on
+            review queue entries so an author or reviewer can see the risky
+            patterns without reading every file.
+          items:
+            type: object
+            required: [code, file, line, message]
+            properties:
+              code:
+                type: string
+                enum: [fetch, eval, new-function, xmlhttprequest, insecure-http]
+              file: { type: string, description: Path within the uploaded tarball. }
+              line: { type: integer }
+              message: { type: string }
         sourceUrl:
           type: string
           format: uri

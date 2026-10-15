@@ -60,6 +60,7 @@ import { sourcePathFor, removeSourceIfUnused, storeSource } from '../sources.js'
 import { manifestFromProject } from '../project-manifest.js';
 import { extractTarballBuffer } from '../tarball.js';
 import { compileProject } from '../compiler.js';
+import { scanSourceWarnings } from '../risky-patterns.js';
 import { minifyCode, MINIFY_INPUT_MAX_BYTES } from '../minify.js';
 import { totalDownloads, hashDownloadAddress } from '../metrics.js';
 import { makeWebhooks, WebhookInputError } from '../webhooks.js';
@@ -313,11 +314,13 @@ export function makePackagesRouter({ sql, config, termsGate, rateLimiter, resolv
       let manifest;
       let buildLog;
       let compiled;
+      let warnings;
       try {
         const projectDir = path.join(jobDir, 'project');
         await mkdir(projectDir, { recursive: true });
+        let files;
         try {
-          await extractTarballBuffer(tarball, projectDir, {
+          files = await extractTarballBuffer(tarball, projectDir, {
             maxTotalBytes: maxSource * 16,
           });
         } catch (error) {
@@ -326,6 +329,7 @@ export function makePackagesRouter({ sql, config, termsGate, rateLimiter, resolv
             detail: error.message,
           });
         }
+        warnings = await scanSourceWarnings(projectDir, files);
 
         let projectText;
         try {
@@ -406,6 +410,7 @@ export function makePackagesRouter({ sql, config, termsGate, rateLimiter, resolv
         code: compiled,
         sourceBuffer: tarball,
         buildLog,
+        warnings,
         stagedBy: req.auth.user,
       });
       if (row.status === 'published') {
@@ -1415,7 +1420,7 @@ async function publishVersion(
   sql,
   config,
   owner,
-  { id, manifest, code, sourceBuffer, buildLog, stagedBy },
+  { id, manifest, code, sourceBuffer, buildLog, warnings = [], stagedBy },
 ) {
   const version = normalizeSemver(manifest.version);
   const name = typeof manifest.name === 'string' && manifest.name.length > 0 ? manifest.name : id;
@@ -1477,14 +1482,14 @@ async function publishVersion(
           owner_id, namespace, extension_id, version, status,
           name, license, description, author, color1, color2, color3,
           is_unsandboxed, blob_path, blob_digest, blob_size, blob_sha512, search_text,
-          source_size, build_log
+          source_size, build_log, warnings
         ) VALUES (
           ${credentialOwner.id}, ${owner.namespace}, ${id}, ${version}, 'staging',
           ${name}, ${manifest.license}, ${manifest.description}, ${manifest.author ?? null},
           ${manifest.color1 ?? null}, ${manifest.color2 ?? null}, ${manifest.color3 ?? null},
           ${manifest.isUnsandboxed ?? null},
           ${blobRelative}, ${digest}, ${codeBuffer.length}, ${sha512}, ${searchText},
-          ${sourceBuffer.length}, ${buildLog}
+          ${sourceBuffer.length}, ${buildLog}, ${tx.json(warnings)}::jsonb
         )
         RETURNING *
       `;
