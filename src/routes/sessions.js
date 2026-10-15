@@ -24,6 +24,11 @@ export function makeSessionsRouter({ sql, config, termsGate, rateLimiter }) {
   // body carries the credentials rather than a namespace in the path, because
   // the account is the subject of the credential, not of the URL.
   router.post('/', async (req, res) => {
+    // IdP-only mode: the provider is the only way in, so a password presented
+    // here is refused before it is even looked at.
+    if (config.auth.oidc.required) {
+      throw forbidden('Password sign-in is turned off. Sign in with the identity provider.');
+    }
     requireObjectBody(req);
     const { namespace, password } = req.body;
     if (

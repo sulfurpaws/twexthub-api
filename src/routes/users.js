@@ -34,6 +34,13 @@ export function makeUsersRouter({ sql, config, termsGate, rateLimiter, resolveTa
   // with a session already: the response is the user, the session that was
   // opened for it, and the token to use for both.
   router.post('/', async (req, res) => {
+    // IdP-only mode: accounts are created by signing in at the provider, so a
+    // direct password registration is refused.
+    if (config.auth.oidc.required) {
+      throw forbidden(
+        'Registration is turned off. Sign in with the identity provider to get an account.',
+      );
+    }
     requireObjectBody(req);
     const { namespace, password, displayName } = req.body;
 
@@ -265,6 +272,14 @@ export function makeUsersRouter({ sql, config, termsGate, rateLimiter, resolveTa
       // resetting somebody else's password has no password to confirm, which
       // is why this asks for authority rather than for a role alone.
       if (!isAdmin(req.auth)) {
+        // An account created through the provider has no password to confirm,
+        // and letting a session set one would turn a stolen session into a
+        // standing credential, so that stays an admin action.
+        if (!target.password_hash) {
+          throw forbidden(
+            'This account signs in with the identity provider. An admin can set a password for it.',
+          );
+        }
         const currentPassword = req.body.currentPassword;
         if (typeof currentPassword !== 'string' || currentPassword.length === 0) {
           throw fieldErrors([
