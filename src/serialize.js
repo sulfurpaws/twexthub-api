@@ -156,6 +156,7 @@ export function versionToObject(row, config) {
   };
   if (row.author) out.author = row.author;
   if (row.published_at) out.publishedAt = row.published_at.toISOString();
+  if (Array.isArray(row.warnings) && row.warnings.length > 0) out.warnings = row.warnings;
   if (row.status === 'deprecated') {
     out.deprecation = row.deprecation_message ?? null;
   }
