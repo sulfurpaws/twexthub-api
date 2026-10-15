@@ -97,6 +97,10 @@ test('caps the report so a minified file cannot produce an unbounded row', async
 });
 
 test('keeps the first findings in source order when a later pattern is capped', async () => {
+  // eval is a later entry in PATTERNS than fetch, so a shared-list cap fills
+  // with fetch first and drops these earlier eval lines. The assertion below
+  // fails under that behavior and passes only when each pattern is capped on
+  // its own.
   const lines = [
     ...Array.from({ length: 60 }, () => 'eval("x");'),
     ...Array.from({ length: 40 }, () => ''),
