@@ -24,6 +24,22 @@ export function makeAuthRouter({ sql, config, rateLimiter }) {
   const client = enabled ? makeOidcClient(config) : null;
   const sessionTtlMs = config.auth.sessionTtlDays * 86_400_000;
 
+  // The flow is bound to the browser that started it by a secret in a cookie:
+  // the callback has to present the same secret, so a callback minted in one
+  // browser cannot be replayed into another. `Secure` only when the instance
+  // is actually served over TLS, for the same reason the instance allows plain
+  // HTTP at all.
+  const flowCookie = 'twexthub_oidc_flow';
+  const flowCookieOptions = {
+    httpOnly: true,
+    sameSite: 'lax',
+    secure: config.publicBaseUrl.startsWith('https:'),
+    path: mount('/auth'),
+    maxAge: FLOW_TTL_MS,
+  };
+  const setFlowCookie = (res, secret) => res.cookie(flowCookie, secret, flowCookieOptions);
+  const clearFlowCookie = (res) => res.clearCookie(flowCookie, flowCookieOptions);
+
   // What a sign-in page needs to render: whether password sign-in is offered,
   // and where the button for the provider should lead. Public, because it is
   // read before anybody has signed in.
@@ -44,13 +60,15 @@ export function makeAuthRouter({ sql, config, rateLimiter }) {
     const state = newSecret();
     const verifier = newSecret();
     const nonce = newSecret();
+    const binding = newSecret();
     const authorizationUrl = await client.authorizationUrl({ state, nonce, verifier });
 
     await sql`DELETE FROM oidc_flows WHERE expires_at < now()`;
     await sql`
-      INSERT INTO oidc_flows (kind, state_hash, code_verifier, nonce, return_to, expires_at)
-      VALUES ('signin', ${hashToken(state)}, ${verifier}, ${nonce}, ${returnTo}, ${new Date(Date.now() + FLOW_TTL_MS)})
+      INSERT INTO oidc_flows (kind, state_hash, flow_secret_hash, code_verifier, nonce, return_to, expires_at)
+      VALUES ('signin', ${hashToken(state)}, ${hashToken(binding)}, ${verifier}, ${nonce}, ${returnTo}, ${new Date(Date.now() + FLOW_TTL_MS)})
     `;
+    setFlowCookie(res, binding);
 
     if (wantsHtml(req)) return res.redirect(authorizationUrl);
     res.json({ authorizationUrl });
@@ -72,12 +90,17 @@ export function makeAuthRouter({ sql, config, rateLimiter }) {
 
     // Claiming the row and consuming its state are the same write: the guard
     // on exchange_code_hash means only the first callback through matches, so
-    // a replayed state finds nothing.
+    // a replayed state finds nothing. The cookie binding is checked in the
+    // same statement, so a callback carrying another browser's state does not
+    // complete a sign-in for this one.
     const exchangeCode = newSecret();
+    const binding = readCookie(req, flowCookie);
     const [flow] = await sql`
       UPDATE oidc_flows
       SET exchange_code_hash = ${hashToken(exchangeCode)}
-      WHERE state_hash = ${hashToken(state)} AND exchange_code_hash IS NULL AND expires_at > now()
+      WHERE state_hash = ${hashToken(state)}
+        AND flow_secret_hash = ${hashToken(binding ?? '')}
+        AND exchange_code_hash IS NULL AND expires_at > now()
       RETURNING *
     `;
     if (!flow) {
@@ -90,6 +113,7 @@ export function makeAuthRouter({ sql, config, rateLimiter }) {
         'The sign-in attempt is unknown or has expired.',
       );
     }
+    clearFlowCookie(res);
 
     if (typeof providerError === 'string' && providerError !== '') {
       return failFlow(
@@ -171,13 +195,15 @@ export function makeAuthRouter({ sql, config, rateLimiter }) {
     const state = newSecret();
     const verifier = newSecret();
     const nonce = newSecret();
+    const binding = newSecret();
     const authorizationUrl = await client.authorizationUrl({ state, nonce, verifier });
 
     await sql`DELETE FROM oidc_flows WHERE expires_at < now()`;
     await sql`
-      INSERT INTO oidc_flows (kind, state_hash, code_verifier, nonce, user_id, return_to, expires_at)
-      VALUES ('link', ${hashToken(state)}, ${verifier}, ${nonce}, ${req.auth.user.id}, ${returnTo}, ${new Date(Date.now() + FLOW_TTL_MS)})
+      INSERT INTO oidc_flows (kind, state_hash, flow_secret_hash, code_verifier, nonce, user_id, return_to, expires_at)
+      VALUES ('link', ${hashToken(state)}, ${hashToken(binding)}, ${verifier}, ${nonce}, ${req.auth.user.id}, ${returnTo}, ${new Date(Date.now() + FLOW_TTL_MS)})
     `;
+    setFlowCookie(res, binding);
     res.json({ authorizationUrl });
   });
 
@@ -438,20 +464,49 @@ function wantsHtml(req) {
   return String(req.headers.accept ?? '').includes('text/html');
 }
 
+// Read one cookie without pulling in a parser for the whole jar. The values
+// this reads are base64url secrets this instance set, so malformed input is
+// simply "no cookie".
+function readCookie(req, name) {
+  const header = req.headers.cookie;
+  if (!header) return null;
+  for (const part of header.split(';')) {
+    const eq = part.indexOf('=');
+    if (eq === -1) continue;
+    if (part.slice(0, eq).trim() !== name) continue;
+    try {
+      return decodeURIComponent(part.slice(eq + 1).trim());
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
 // Where the browser is sent once the provider hands it back. A path is
-// resolved against publicBaseUrl; an absolute URL has to name an origin the
-// instance already trusts, because otherwise an authorize link with an
+// resolved against publicBaseUrl and has to stay on that origin; an absolute
+// URL has to name an origin the instance already trusts. Either way the stored
+// value is the resolved URL, because otherwise an authorize link with an
 // attacker's returnTo would hand that attacker a freshly minted sign-in code.
 function returnToPath(value, config) {
   if (value === undefined || value === null || value === '') return null;
   if (typeof value !== 'string' || value.length > 1024) {
     throw fieldErrors([{ field: 'returnTo', message: 'Must be a path or an allowed origin.' }]);
   }
+  // Control characters are stripped by the URL parser rather than encoded, so
+  // "/<tab>/evil.example" would first pass the leading-slash check here and
+  // then resolve to "//evil.example" off-origin. Backslashes are refused for
+  // the same reason on the browsers that treat them as slashes.
+  if (hasControlChars(value) || value.includes('\\')) {
+    throw fieldErrors([{ field: 'returnTo', message: 'Must be a path on this instance.' }]);
+  }
+  const base = URL.parse(config.publicBaseUrl);
   if (value.startsWith('/')) {
-    if (value.startsWith('//') || value.includes('\\')) {
+    const target = resolveAgainst(value, config.publicBaseUrl);
+    if (!base || !target || target.origin !== base.origin) {
       throw fieldErrors([{ field: 'returnTo', message: 'Must be a path on this instance.' }]);
     }
-    return value;
+    return `${target.pathname}${target.search}${target.hash}`;
   }
   const parsed = URL.parse(value);
   if (!parsed || (parsed.protocol !== 'https:' && parsed.protocol !== 'http:')) {
@@ -467,6 +522,22 @@ function returnToPath(value, config) {
     ]);
   }
   return parsed.toString();
+}
+
+function resolveAgainst(value, base) {
+  try {
+    return new URL(value, base);
+  } catch {
+    return null;
+  }
+}
+
+function hasControlChars(value) {
+  for (let i = 0; i < value.length; i += 1) {
+    const code = value.charCodeAt(i);
+    if (code <= 0x1f || code === 0x7f) return true;
+  }
+  return false;
 }
 
 function allowedReturnOrigins(config) {

@@ -29,6 +29,10 @@ CREATE TABLE oidc_flows (
   id BIGSERIAL PRIMARY KEY,
   kind TEXT NOT NULL CHECK (kind IN ('signin', 'link')),
   state_hash TEXT NOT NULL UNIQUE,
+  -- The hash of a secret set as a cookie in the browser that began the flow,
+  -- so a callback from a different browser cannot complete it: state alone
+  -- stops a forged callback, not a valid one replayed into another browser.
+  flow_secret_hash TEXT NOT NULL,
   code_verifier TEXT NOT NULL,
   nonce TEXT NOT NULL,
   user_id BIGINT REFERENCES users(id) ON DELETE CASCADE,

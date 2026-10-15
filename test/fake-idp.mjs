@@ -14,6 +14,7 @@ export async function startFakeIdp() {
   const codes = new Map();
   let port = 0;
   let claims = defaultClaims();
+  let tokenOptions = {};
 
   const origin = () => `http://localhost:${port}`;
 
@@ -61,14 +62,14 @@ export async function startFakeIdp() {
       if (challenge !== entry.challenge) {
         return sendJson(res, 400, { error: 'invalid_grant', error_description: 'PKCE' });
       }
-      const idToken = await new SignJWT({ nonce: entry.nonce, ...entry.claims })
-        .setProtectedHeader({ alg: 'RS256', kid: 'test-key' })
-        .setIssuer(origin())
-        .setAudience(entry.clientId)
-        .setSubject(entry.claims.sub)
-        .setIssuedAt()
-        .setExpirationTime('5m')
-        .sign(privateKey);
+      const idToken = await signIdToken({
+        privateKey,
+        issuer: origin(),
+        audience: entry.clientId,
+        nonce: entry.nonce,
+        claims: entry.claims,
+        options: tokenOptions,
+      });
       return sendJson(res, 200, {
         id_token: idToken,
         token_type: 'Bearer',
@@ -96,6 +97,11 @@ export async function startFakeIdp() {
     setClaims(next) {
       claims = { ...defaultClaims(), ...next };
     },
+    // Shape the ID tokens the provider will mint, e.g. `{ omitExp: true }` to
+    // present a token a conforming client has to reject.
+    setTokenOptions(next) {
+      tokenOptions = { ...next };
+    },
     async close() {
       await new Promise((resolve) => server.close(resolve));
     },
@@ -104,6 +110,17 @@ export async function startFakeIdp() {
 
 function defaultClaims() {
   return { sub: `subject-${randomUUID()}`, email: 'person@example.test', name: 'Test Person' };
+}
+
+function signIdToken({ privateKey, issuer, audience, nonce, claims, options }) {
+  const jwt = new SignJWT({ nonce, ...claims })
+    .setProtectedHeader({ alg: 'RS256', kid: 'test-key' })
+    .setIssuer(issuer)
+    .setAudience(audience)
+    .setSubject(claims.sub);
+  if (!options.omitIat) jwt.setIssuedAt();
+  if (!options.omitExp) jwt.setExpirationTime('5m');
+  return jwt.sign(privateKey);
 }
 
 function sendJson(res, status, value) {

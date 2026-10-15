@@ -149,6 +149,9 @@ export function makeOidcClient(config) {
         issuer: [issuer, `${issuer}/`],
         audience: clientId,
         algorithms: SIGNING_ALGS,
+        // OIDC Core requires iss, sub, aud, exp and iat on an ID token, so a
+        // token missing any of them is not one this instance will accept.
+        requiredClaims: ['exp', 'iat', 'sub'],
         clockTolerance: 10,
       }));
     } catch (error) {
