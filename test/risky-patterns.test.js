@@ -96,6 +96,29 @@ test('caps the report so a minified file cannot produce an unbounded row', async
   }
 });
 
+test('keeps the first findings in source order when a later pattern is capped', async () => {
+  const lines = [
+    ...Array.from({ length: 60 }, () => 'eval("x");'),
+    ...Array.from({ length: 40 }, () => ''),
+    ...Array.from({ length: 60 }, () => 'fetch("https://example.com");'),
+  ];
+  const dir = await writeProject({ 'src/index.js': lines.join('\n') });
+  try {
+    const warnings = await scanSourceWarnings(dir, ['src/index.js']);
+    assert.equal(warnings.length, 50);
+    assert.deepEqual(
+      warnings.map((warning) => warning.code),
+      Array.from({ length: 50 }, () => 'eval'),
+    );
+    assert.deepEqual(
+      warnings.map((warning) => warning.line),
+      Array.from({ length: 50 }, (_, index) => index + 1),
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test('scans a path listed twice only once', async () => {
   const dir = await writeProject({ 'src/index.js': 'eval("x");\n' });
   try {

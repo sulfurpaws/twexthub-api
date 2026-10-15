@@ -64,6 +64,7 @@ export async function scanSourceWarnings(projectDir, files) {
       let line = 1;
       let nextNewline = text.indexOf('\n');
       let lastLine = 0;
+      let added = 0;
       for (const match of text.matchAll(pattern.match)) {
         while (nextNewline !== -1 && match.index > nextNewline) {
           line += 1;
@@ -72,7 +73,11 @@ export async function scanSourceWarnings(projectDir, files) {
         if (line === lastLine) continue;
         lastLine = line;
         found.push({ order, line, code: pattern.code, message: pattern.message });
-        if (found.length >= MAX_WARNINGS) break;
+        // Cap each pattern on its own, not on the shared list: capping in
+        // pattern order would drop early lines from a later pattern and keep
+        // late lines from an earlier one, so the sort below could not recover
+        // the first MAX_WARNINGS findings in source order.
+        if (++added >= MAX_WARNINGS) break;
       }
     }
     // Read in source order: top to bottom, and within a line the pattern order.
