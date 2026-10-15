@@ -28,6 +28,11 @@ database:
 auth:
   sessionTtlDays: 7
   scrypt: { N: 16384, r: 8, p: 1 }
+  oidc:
+    issuer: null
+    clientId: null
+    clientSecret: null
+    required: false
 
 rateLimits:
   loginAttemptsPerWindow: 5
@@ -120,6 +125,35 @@ Migrations run automatically when the server boots, and `node src/migrate.js` ap
 
 - `sessionTtlDays`: Lifetime of a sign-in session, in days. It applies to sessions created after the change; existing sessions keep the expiry they were given. Defaults to `7`. `TWEXTHUB_SESSION_TTL_DAYS`.
 - `scrypt`: Cost parameters (`N`, `r`, `p`) for password hashing. File-only, and each stored hash records the parameters it was made with, so changing them affects new passwords without invalidating old ones. The defaults (`16384`, `8`, `1`) are a sensible balance; raising `N` makes every sign-in more expensive for the server.
+- `oidc.issuer`: Base URL of an OpenID Connect provider, with a trailing slash allowed. Setting it (with `clientId`) turns on provider sign-in. Defaults to `null` (off). `TWEXTHUB_OIDC_ISSUER`.
+- `oidc.clientId`: Client identifier registered at the provider. `TWEXTHUB_OIDC_CLIENT_ID`.
+- `oidc.clientSecret`: Client secret for a confidential client. Leave unset for a public client that authenticates with PKCE alone. `TWEXTHUB_OIDC_CLIENT_SECRET`.
+- `oidc.required`: When `true`, password sign-in and registration are refused and the provider is the only way to get an account. Defaults to `false`. `TWEXTHUB_OIDC_REQUIRED`.
+
+`oidc.issuer` and `oidc.clientId` must be set together, and `oidc.required` cannot be turned on without both — the server refuses to start otherwise, so an instance cannot lock itself out of every way in.
+
+### Signing in with an identity provider
+
+Point `oidc.issuer` at the provider's base URL (the same value it publishes as its `issuer`); discovery is read from `<issuer>/.well-known/openid-configuration`. Register the instance's callback URL at the provider:
+
+```
+<publicBaseUrl>/<apiRoot>/auth/oidc/callback
+```
+
+For example, `http://localhost:3000/v2/auth/oidc/callback`. The redirect URI is derived from `publicBaseUrl` and `apiRoot` rather than configured, so it cannot drift from what the instance actually serves.
+
+The routes are:
+
+- `GET /auth` — public; says whether password sign-in is offered and, when the provider is on, its issuer and whether it is required. A sign-in page reads this to decide what to render.
+- `GET /auth/oidc/authorize` — starts a sign-in. Add `returnTo` to send the browser somewhere specific afterwards; it must be a path on this instance or an origin listed in `cors.allowedOrigins`. A browser (an `Accept: text/html` request) is redirected to the provider; an API client gets `{ "authorizationUrl": ... }`.
+- `GET /auth/oidc/callback` — where the provider sends the browser back. In a browser it redirects to `returnTo` with a one-time `oidc_code`; an API client receives the session directly.
+- `POST /auth/oidc/exchange` — trades the browser's one-time `oidc_code` for the session, so the session token is never carried in a URL.
+- `POST /auth/oidc/link` — starts linking the provider to the signed-in account (session required).
+- `GET /auth/oidc/identities` and `DELETE /auth/oidc/identities/<id>` — list and remove the account's linked identities. The last way into an account cannot be removed if it would leave the account unreachable.
+
+The first account created through the provider becomes an admin, exactly as the first password registration does. An account's namespace comes from the provider's `preferred_username` (or `nickname`/`username`) when it can be one, with a `user-<hash>` fallback. Email is stored for reference and is never used to match or link accounts — only the provider's `iss`/`sub` pair is.
+
+When `oidc.required` is on, `POST /sessions` and `POST /users` return `403`; existing sessions and tokens keep working. Turn it on only after you have signed in through the provider at least once, so the instance always has an admin.
 
 ## 🚦 Rate Limits
 
