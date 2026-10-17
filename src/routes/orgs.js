@@ -331,16 +331,15 @@ export function makeOrgsRouter({
     }
     // Adding a co-owner is a grant like any other, so it is idempotent rather
     // than an error: a retry of a request that actually landed should not need
-    // the caller to know it landed.
-    const { count } = await db.organization_owners.createMany({
-      data: [{ org_id: org.id, user_id: user.id, added_by: req.auth.user.id }],
-      skipDuplicates: true,
-    });
-    if (count === 0) {
-      res.status(204).end();
-      return;
-    }
+    // the caller to know it landed. The insert, its notification and its audit
+    // entry commit together, so a failure after the insert cannot leave a
+    // co-owner the audit trail never recorded.
     await db.$transaction(async (tx) => {
+      const { count } = await tx.organization_owners.createMany({
+        data: [{ org_id: org.id, user_id: user.id, added_by: req.auth.user.id }],
+        skipDuplicates: true,
+      });
+      if (count === 0) return;
       if (user.id !== req.auth.user.id) {
         await notifyUser(
           tx,

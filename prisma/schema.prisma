@@ -272,7 +272,7 @@ model users {
   organization_owners_organization_owners_user_id_user_kindTousers  organization_owners[]     @relation("organization_owners_user_id_user_kindTousers")
   sessions                                                          sessions[]
   user_identities                                                   user_identities[]
-  versions                                                          versions?
+  versions                                                          versions[]
 
   @@unique([id, kind])
   @@index([avatar_blob_digest], map: "users_avatar_blob_idx", where: raw("(avatar_blob_digest IS NOT NULL)"))

@@ -1365,12 +1365,12 @@ export function makePackagesRouter({ db, config, termsGate, rateLimiter, resolve
     const { namespace, id } = req.params;
     if (!isValidNamespace(namespace) || !isValidExtensionId(id)) throw notFound();
     const lockKey = `${namespace}/${id}`;
-    // The per-extension lock is the same one publishVersion uses, and it is held
-    // across the delete transaction, the quota refund and the filesystem
-    // cleanup: if it were released with the delete, a concurrent publish could
-    // reuse a blob path and have its freshly written bytes removed by this
-    // cleanup. The GC lock is held for the same reason on the content-addressed
-    // files.
+    // The per-extension lock is the same one publishVersion uses. The delete
+    // commits its row changes first, then the filesystem cleanup reacquires this
+    // lock (and the GC lock) so a concurrent publish cannot reuse a blob path
+    // and have its freshly written bytes removed by a cleanup that is still
+    // running. The keeper check in the cleanup has to see the committed delete,
+    // which is why it runs after the transaction rather than inside it.
     const { rows, charged } = await withLocks(db, [lockKey, BLOB_GC_LOCK_KEY], async (tx) => {
       if (!(await isExtensionOwner(req.auth.user, namespace, id))) {
         throw forbidden('You can only delete your own extensions.');
@@ -1413,21 +1413,34 @@ export function makePackagesRouter({ db, config, termsGate, rateLimiter, resolve
             `;
         }
       }
-      // The delete is not yet committed, so the keeper check has to see it:
-      // the in-transaction helpers run on `tx` and share this transaction.
-      for (const version of found) {
-        if (version.blob_digest) {
-          await removeBlobIfUnusedInTx(tx, config, version.blob_digest, null);
-        } else if (version.blob_path) {
-          await rm(path.join(config.dataDir, version.blob_path), { force: true });
-        }
-      }
-      const dedupedSources = new Set(found.map((row) => row.source_digest).filter(Boolean));
-      for (const digest of dedupedSources) {
-        await removeSourceIfUnusedInTx(tx, config, digest);
-      }
+      // The filesystem cleanup is deliberately not part of this transaction: it
+      // can be slow, and unlinking before the commit would remove a file a later
+      // rollback still needs. Hand the digests back and clean up once this has
+      // committed, under the same locks.
       return { rows: found, charged: total };
     });
+    // Reacquired after the commit, so the keeper check sees this delete: a digest
+    // another version still references is kept, and holding the address lock
+    // keeps a concurrent publish from reusing a path this cleanup removes.
+    try {
+      await withLocks(db, [lockKey, BLOB_GC_LOCK_KEY], async (tx) => {
+        for (const version of rows) {
+          if (version.blob_digest) {
+            await removeBlobIfUnusedInTx(tx, config, version.blob_digest, null);
+          } else if (version.blob_path) {
+            await rm(path.join(config.dataDir, version.blob_path), { force: true });
+          }
+        }
+        const dedupedSources = new Set(rows.map((row) => row.source_digest).filter(Boolean));
+        for (const digest of dedupedSources) {
+          await removeSourceIfUnusedInTx(tx, config, digest);
+        }
+      });
+    } catch (error) {
+      // A cleanup failure costs disk, not correctness: the boot-time sweep in
+      // db.js collects whatever is left unreferenced.
+      console.error(`blob cleanup deferred for ${namespace}/${id}: ${error.message}`);
+    }
     auditSoon(
       db,
       req.auth.user,

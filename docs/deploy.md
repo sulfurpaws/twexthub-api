@@ -42,7 +42,7 @@ Releases before 2.2 applied their own numbered SQL files and recorded them in `s
 The rules, all enforced at boot inside one transaction that holds an advisory lock:
 
 - If the database has no migration history at all, the baseline is applied: a fresh install needs nothing from you.
-- If `schema_migrations` holds all 29 files (`0001_init.sql` through `0029_version_download_metrics.sql`), the baseline is recorded as already applied and the schema is left alone. Your existing rows, sequences, and data directory are untouched.
+- If `schema_migrations` holds every migration the SQL releases shipped (`0001_init.sql` through `0028_version_warnings.sql`), the baseline is recorded as already applied and the schema is brought up to date by Prisma Migrate — including the per-version download rollup (`0029_version_download_metrics.sql`) that followed those releases. Your existing rows, sequences, and data directory are untouched.
 - If it holds some but not all of them, the instance refuses to start and says so. A partial history cannot be adopted: marking the baseline applied would skip whatever the missing files built, and running it would fail against tables that already exist. Finish the upgrade with the release that owns those files first.
 - If `_prisma_migrations` exists and `schema_migrations` does not, the database is already on Prisma Migrate and pending migrations are applied.
 
@@ -51,8 +51,10 @@ This is a one-way door. Taking a backup first is not optional — the baseline i
 Recovery, if a deployment is interrupted mid-adoption and leaves the baseline recorded without the rest of the history in place:
 
 ```bash
-npx prisma migrate resolve --rolled-back 0_baseline
+DATABASE_URL="$TWEXTHUB_DATABASE_URL" npx prisma migrate resolve --rolled-back 0_baseline --config prisma.config.mjs
 ```
+
+The `DATABASE_URL` prefix matters: `prisma.config.mjs` reads that variable and falls back to a local default when it is unset, so naming it here keeps the command pointed at the database you configured through `TWEXTHUB_DATABASE_URL` rather than one on the host.
 
 That removes the baseline's row so the next boot records it again. `--applied` does the opposite, marking it applied without running it, which is what the bridge does for a complete legacy history and should not be needed by hand.
 

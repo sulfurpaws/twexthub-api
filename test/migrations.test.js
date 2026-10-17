@@ -191,7 +191,7 @@ test('the baseline builds the objects the application depends on', async () => {
 test('a complete legacy history is adopted in place', async () => {
   await withScratchDatabase(async (db, config) => {
     const files = await legacyFiles();
-    assert.equal(files.length, 29, 'the archive holds the 29 migrations adoption expects');
+    assert.equal(files.length, 29, 'the archive holds the 29 SQL migrations the releases wrote');
     await applyLegacyMigrations(db, files);
     await db.$executeRaw`
       INSERT INTO users (namespace, password_hash, display_name)
@@ -200,16 +200,47 @@ test('a complete legacy history is adopted in place', async () => {
 
     await runMigrations(db, config);
 
-    const applied = await db.$queryRaw`SELECT migration_name FROM _prisma_migrations`;
+    const applied = await db.$queryRaw`
+      SELECT migration_name FROM _prisma_migrations ORDER BY migration_name
+    `;
     assert.deepEqual(
       applied.map((row) => row.migration_name),
-      ['0_baseline'],
+      ['0_baseline', '1_version_download_metrics'],
       'the baseline is recorded as applied, without its DDL running again',
     );
     const [kept] = await db.$queryRaw`SELECT namespace FROM users WHERE namespace = 'sentinel'`;
     assert.equal(kept.namespace, 'sentinel', 'the existing rows are untouched');
     // The migrated database is the one the application queries.
     assert.equal(await db.versions.count(), 0);
+  });
+});
+
+test('a history that stops before the download rollup is adopted and gets the table', async () => {
+  await withScratchDatabase(async (db, config) => {
+    // The last release before the Prisma conversion shipped 0028 and earlier;
+    // 0029 only ever existed in the Prisma flow, so a database adopted from that
+    // release must have the rollup created for it rather than required of it.
+    const files = (await legacyFiles()).filter(
+      (name) => name !== '0029_version_download_metrics.sql',
+    );
+    assert.equal(files.length, 28, 'the pre-Prisma release shipped 28 SQL migrations');
+    await applyLegacyMigrations(db, files);
+
+    await runMigrations(db, config);
+
+    const applied = await db.$queryRaw`
+      SELECT migration_name FROM _prisma_migrations ORDER BY migration_name
+    `;
+    assert.deepEqual(
+      applied.map((row) => row.migration_name),
+      ['0_baseline', '1_version_download_metrics'],
+      'the baseline is marked applied and the rollup is run after it',
+    );
+    const [{ present }] = await db.$queryRaw`
+      SELECT count(*)::int AS present FROM pg_tables
+      WHERE schemaname = 'public' AND tablename = 'extension_version_daily_downloads'
+    `;
+    assert.equal(present, 1, 'Prisma Migrate created the per-version download rollup');
   });
 });
 
@@ -221,7 +252,7 @@ test('a partial legacy history is refused before anything is written', async () 
     await assert.rejects(
       runMigrations(db, config),
       /pre-Prisma upgrade error/,
-      'three of twenty-nine migrations cannot be adopted',
+      'three of the legacy migrations cannot be adopted',
     );
     const recorded = await db.$queryRaw`SELECT migration_name FROM _prisma_migrations`;
     assert.equal(recorded.length, 0, 'the refusal leaves no history behind');
@@ -236,10 +267,12 @@ test('two bootstraps racing for one database serialize', async () => {
     } finally {
       await peer.$disconnect();
     }
-    const applied = await db.$queryRaw`SELECT migration_name FROM _prisma_migrations`;
+    const applied = await db.$queryRaw`
+      SELECT migration_name FROM _prisma_migrations ORDER BY migration_name
+    `;
     assert.deepEqual(
       applied.map((row) => row.migration_name),
-      ['0_baseline'],
+      ['0_baseline', '1_version_download_metrics'],
       'the baseline is applied exactly once',
     );
   });

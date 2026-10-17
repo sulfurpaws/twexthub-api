@@ -11,6 +11,7 @@ import { copyFile, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { Prisma, PrismaClient } from '../prisma/generated/client/index.js';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { loadConfig } from './config.js';
@@ -28,6 +29,13 @@ export { acquireAdvisoryLocks, withLocks };
 // migration history is adopted. Held across the CLI run, so two instances
 // starting at once run `prisma migrate deploy` one after the other.
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
+// The CLI is launched as a Node script through the interpreter already running
+// the server, resolved from the project's own dependencies. Spawning `npx`
+// instead would search PATH for a package and could run a different Prisma or
+// download one, and the platform's npx shim is not guaranteed to be present in
+// a container.
+const projectRequire = createRequire(import.meta.url);
+const PRISMA_CLI = projectRequire.resolve('prisma/build/index.js');
 const MIGRATE_LOCK_KEY = 32001;
 // Serializes the boot-time cleanup pass (staging rows, expiry sweeps, legacy
 // blob re-keying) so a second instance does not race the first over the same
@@ -102,6 +110,13 @@ export function uniqueViolation(error) {
   return null;
 }
 
+// The SQL migrations the pre-Prisma releases shipped. A database whose
+// `schema_migrations` holds every one of these is adopted by recording the
+// baseline as applied. Migrations that were only ever carried by the Prisma
+// flow (such as the per-version download rollup that became
+// `1_version_download_metrics`) are deliberately absent: Prisma applies them
+// after adoption, so a database that stopped at the last SQL release is brought
+// up to date instead of refused.
 const LEGACY_MIGRATIONS = [
   '0001_init.sql',
   '0002_pruning.sql',
@@ -131,14 +146,13 @@ const LEGACY_MIGRATIONS = [
   '0026_version_is_unsandboxed.sql',
   '0027_oidc.sql',
   '0028_version_warnings.sql',
-  '0029_version_download_metrics.sql',
 ];
 
 const BASELINE_MIGRATION = '0_baseline';
 
 function runCli(args, env) {
   return new Promise((resolve, reject) => {
-    const proc = spawn('npx', ['prisma', ...args, '--config', 'prisma.config.mjs'], {
+    const proc = spawn(process.execPath, [PRISMA_CLI, ...args, '--config', 'prisma.config.mjs'], {
       cwd: path.join(moduleDir, '..'),
       env,
       stdio: 'inherit',
@@ -152,10 +166,12 @@ function runCli(args, env) {
 }
 
 // Adopts the database onto Prisma Migrate, then applies it. A database that
-// already ran the 29 legacy SQL files has no `_prisma_migrations` row for the
-// baseline, so the baseline is marked applied rather than run; anything less
-// than the full set is a history this bridge cannot stand behind and is
-// rejected before anything is written.
+// already ran every one of the legacy SQL files has no `_prisma_migrations` row
+// for the baseline, so the baseline is marked applied rather than run; a partial
+// history is one this bridge cannot stand behind and is rejected before anything
+// is written. Any migration the baseline build added afterwards (the per-version
+// download rollup) is left for `migrate deploy` to apply, so adopting a database
+// that predates it brings the table in rather than skipping it.
 export async function runMigrations(db, config = loadConfig()) {
   const env = { ...process.env, DATABASE_URL: config.database.url };
 
@@ -199,13 +215,11 @@ export async function runMigrations(db, config = loadConfig()) {
       const prismaSet = new Set(normalizeRows(prismaRows).map((r) => r.migration_name));
 
       if (prismaSet.size === 0 && legacySet.size > 0) {
-        const complete =
-          legacySet.size === LEGACY_MIGRATIONS.length &&
-          LEGACY_MIGRATIONS.every((name) => legacySet.has(name));
+        const complete = LEGACY_MIGRATIONS.every((name) => legacySet.has(name));
         if (!complete) {
           throw new Error(
             'pre-Prisma upgrade error: the database has a partial legacy migration history; ' +
-              'every one of the 29 migrations must be present before adopting Prisma Migrate.',
+              `every one of the ${LEGACY_MIGRATIONS.length} migrations must be present before adopting Prisma Migrate.`,
           );
         }
         // Marking the baseline applied records the history Prisma would have

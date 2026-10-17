@@ -1,4 +1,4 @@
-import { defineConfig } from '@prisma/config';
+import { defineConfig } from 'prisma/config';
 
 const url = process.env.DATABASE_URL || 'postgres://postgres:postgres@localhost:5432/twexthub';
 
