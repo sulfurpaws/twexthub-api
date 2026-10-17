@@ -55,7 +55,7 @@ While installation with Node.js exists, you should prefer Docker because it's sa
    docker compose up -d
    ```
 
-The container applies the schema and any pending migrations on boot, so a first deploy needs no manual migrate step. Upgrading a database that an earlier release built with its own SQL files needs every one of those files present; the [deploy guide](./docs/deploy.md#-upgrading-from-the-sql-migration-releases) has the details.
+The container applies the schema and any pending migrations on boot, so a first deploy needs no manual migrate step. Upgrading a database that an earlier release built with its own SQL files requires its `schema_migrations` table to hold every legacy migration name; the [deploy guide](./docs/deploy.md#-upgrading-from-the-sql-migration-releases) has the details.
 
 ## 💭 Feedback and Contributing
 
