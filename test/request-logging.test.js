@@ -1,11 +1,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import request from 'supertest';
-import { apiPath, makeConfig } from './helpers.mjs';
+import { apiPath, ensureTestDatabase, makeConfig } from './helpers.mjs';
 import { createApp } from '../src/app.js';
 import { createDb, ensureDataDirs } from '../src/db.js';
 
 test('logging.requests emits one JSON line per request', async () => {
+  // This file builds its own app instead of calling boot(), so it creates its
+  // per-process database clone itself.
+  await ensureTestDatabase();
   const config = makeConfig({ logging: { requests: true } });
   ensureDataDirs(config.dataDir);
   const db = createDb(config);

@@ -4,6 +4,7 @@ import request from 'supertest';
 import {
   apiPath,
   bearer,
+  ensureTestDatabase,
   makeConfig,
   publishProject,
   signupAndAccept,
@@ -33,6 +34,9 @@ function makeRateConfig(overrides = {}) {
 }
 
 before(async () => {
+  // This file builds its own app instances instead of calling boot(), so it
+  // creates its per-process database clone itself.
+  await ensureTestDatabase();
   // One shared database and dataDir; the apps differ only in rate limits.
   const loose = makeRateConfig();
   const tight = makeRateConfig({

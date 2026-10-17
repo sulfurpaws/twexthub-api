@@ -98,6 +98,7 @@ The first account to sign up on a fresh database becomes the admin, which is wor
 | `migrations/`                                | The 29 SQL files the server used to apply itself. Archived: nothing reads them.                                                                      |
 | `openapi/v1.yml`, `openapi/v2.yml`           | The OpenAPI description of the API surface, one file per major version. `v2.yml` describes the surface this branch serves.                           |
 | `test/`, `test-fixtures/`                    | The test suite and the Twext projects it publishes end to end.                                                                                       |
+| `scripts/test-run.mjs`                       | The `npm test` runner: migrates the template database, runs the files concurrently against clones of it, and drops the clones afterwards.            |
 | `scripts/test-db.mjs`                        | Creates the test database in the container, idempotently.                                                                                            |
 | `product.yml`                                | The name, version, tagline, and defaults (config filename, API root). The version here must match `package.json`; a test enforces it.                |
 | `docs/`                                      | The documentation in this directory.                                                                                                                 |
@@ -106,23 +107,32 @@ The first account to sign up on a fresh database becomes the admin, which is wor
 
 ## 🧪 Tests
 
-The suite runs on Node's built-in test runner against a real database, one file at a time:
+The suite runs on Node's built-in test runner against a real database:
 
 ```bash
 npm test
 ```
 
-A single file runs the same way. The whole suite shares one database and every file resets it between tests, which is why `npm test` passes `--test-concurrency=1` — two files at once would truncate each other's rows:
+`scripts/test-run.mjs` is what `npm test` calls. It brings the test database up to date once as a template, then runs the files concurrently, each against a clone of it. The clone is what makes concurrency safe: every file calls `resetDb()` between tests, and separate databases mean two files running at once never truncate each other's rows. A clone is made with `CREATE DATABASE ... TEMPLATE`, which copies the template's migration history, so no file pays the migration cost.
+
+A single file runs the same way, sharing the one database instead of cloning it:
 
 ```bash
-node --test test/packages.test.js
+node --test --test-force-exit test/packages.test.js
 ```
 
-`test/preflight.mjs` runs once before the suite and just checks that the database answers. Without it a missing Postgres would fail every file separately with the same connection error, two hundred times over.
+`--test-force-exit` matters because the download endpoint records its metric with
+a fire-and-forgotten insert. That detached promise can leave Node's test harness
+waiting at exit, which hangs the file rather than failing it; the flag lets the
+file exit once its tests and hooks are done. `npm test` passes the same flag.
 
-`test/helpers.mjs` is where the shared pieces live: `boot()` builds the app once per file, `makeConfig()` composes test settings over the production defaults, `resetDb()` truncates between tests, and the signup/publish helpers drive the API the way a client would.
+Concurrency follows `os.availableParallelism()`, kept between two and eight. Set `TWEXTHUB_TEST_CONCURRENCY=1` to run the files one at a time against the shared database — the arrangement to reach for when a failure needs to be read without the other files' output interleaved.
 
-The suite runs against the real PostgreSQL its own migrations build, and `boot()` calls the same `runMigrations` the server does. Two consequences worth knowing: the first boot of a fresh database is the one that applies the baseline, and a `PRISMA_*` or `TWEXTHUB_DATABASE_URL` in your shell affects it like it would the server.
+`test/preflight.mjs` runs once before the files and just checks that the database answers. Without it a missing Postgres would fail every file separately with the same connection error, two hundred times over.
+
+`test/helpers.mjs` is where the shared pieces live: `boot()` builds the app once per file (cloning its database when the run is isolated), `makeConfig()` composes test settings over the production defaults, `resetDb()` truncates between tests, and the signup/publish helpers drive the API the way a client would.
+
+The suite runs against the real PostgreSQL its own migrations build, and the template is migrated with the same `runMigrations` the server does. A consequence worth knowing: a `PRISMA_*` or `TWEXTHUB_DATABASE_URL` in your shell affects it like it would the server.
 
 ### Raw SQL
 
@@ -134,7 +144,7 @@ npm run check:prisma
 
 That check also fails on an import of `postgres`, which is what the project used before Prisma Migrate. It runs in CI and in `npm run check`. `test-fixtures/` holds two complete Twext projects, `hello` and `greeter`, whose committed `dist/` output the tests compare byte-for-byte against what the server's sandbox build produces — if a change to the build pipeline alters the compiled bytes, that's where it shows up.
 
-If your database lives somewhere other than the container, point `TWEXTHUB_TEST_DATABASE_URL` at it. The default is `postgres://postgres:postgres@localhost:5432/twexthub_test`.
+If your database lives somewhere other than the container, point `TWEXTHUB_TEST_DATABASE_URL` at it. The default is `postgres://postgres:postgres@localhost:5432/twexthub_test`. The concurrent clones are created and dropped on that server, so the account in the URL needs permission to create databases and the server needs room for a handful of them at once.
 
 ## 🤖 CI and Releases
 

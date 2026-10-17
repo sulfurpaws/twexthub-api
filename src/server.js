@@ -15,12 +15,16 @@ import { makeWebhooks } from './webhooks.js';
 // drive it directly.
 export async function bootstrap(
   config = loadConfig(),
-  { backgroundJobs = true, storageProbe, resolveTarget } = {},
+  { backgroundJobs = true, storageProbe, resolveTarget, migrations = true } = {},
 ) {
   ensureDataDirs(config.dataDir);
   const db = createDb(config);
   try {
-    await runMigrations(db, config);
+    // The suite applies the migrations once and then tells every later boot to
+    // skip the bridge: each test file boots its own app, so re-running it would
+    // spawn `prisma migrate deploy` a few dozen times to find nothing pending.
+    // Production always applies them.
+    if (migrations) await runMigrations(db, config);
     await reconcileOnBoot(db, config);
     const { app, rateLimiter, telemetry } = createApp({ config, db, storageProbe, resolveTarget });
     if (!backgroundJobs) {
