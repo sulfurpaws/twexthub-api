@@ -1,7 +1,3 @@
-npm notice run @twextjs/twexthub-api@2.1.0 npx
-npm notice run 'prisma' migrate diff --from-empty --to-config-datasource --config ./baseline_config.mjs --script
-Loaded Prisma config from baseline_config.mjs.
-
 -- CreateSchema
 CREATE SCHEMA IF NOT EXISTS "public";
 
