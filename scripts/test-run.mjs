@@ -28,15 +28,19 @@ function spawnAndWait(command, args, options = {}) {
 }
 
 // Drops the clones earlier runs left behind — a crashed run never reached its
-// own cleanup — and the ones this run creates. The template itself does not
-// carry the `_w<pid>` suffix, so it is never touched.
+// own cleanup — and the ones this run creates. A clone is named `<base>_w<pid>`
+// (test/helpers.mjs), so the suffix after the prefix is always digits; matching
+// only that keeps the scan from touching an unrelated database that merely
+// begins with the same characters. The template carries no such suffix, so it
+// is never dropped.
 async function dropClones() {
   const client = new pg.Client({ connectionString: adminUrl.toString() });
   await client.connect();
   try {
     const { rows } = await client.query('SELECT datname FROM pg_database');
     const prefix = `${baseName}_w`;
-    for (const { datname } of rows.filter((row) => row.datname.startsWith(prefix))) {
+    const isClone = (name) => name.startsWith(prefix) && /^[0-9]+$/.test(name.slice(prefix.length));
+    for (const { datname } of rows.filter((row) => isClone(row.datname))) {
       await client.query(`DROP DATABASE IF EXISTS "${datname}" WITH (FORCE)`);
     }
   } finally {
