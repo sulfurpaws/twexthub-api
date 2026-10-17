@@ -94,9 +94,9 @@ export async function runMigrations(sql, migrationsDir = MIGRATIONS_DIR) {
       if (legacySet.size !== required.length || !required.every((f) => legacySet.has(f))) {
         throw new Error('pre-Prisma upgrade error');
       }
-      // Mark baseline as applied if all 29 are present
-      // We'll let prisma migrate deploy run; but we need to ensure _prisma_migrations gets populated appropriately
-      // For the baseline migration name, Prisma names migrations by folder; our folder is 0_baseline
+    }
+    if (prismaSet.size === 0 && legacySet.size === 0) {
+      // fresh deployment - leave adoption to fresh deployment
     }
     // If neither exists, adoption handled by fresh deployment
   });
