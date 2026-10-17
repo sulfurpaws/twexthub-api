@@ -1,6 +1,10 @@
 -- CreateSchema
 CREATE SCHEMA IF NOT EXISTS "public";
 
+-- EnableExtension
+-- Before the trigram index below, which needs its operator class.
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
 -- CreateTable
 CREATE TABLE "public"."audit_log" (
     "id" BIGSERIAL NOT NULL,
@@ -295,7 +299,7 @@ CREATE TABLE "public"."webhooks" (
     "extension_id" TEXT,
     "url" TEXT NOT NULL,
     "secret" TEXT NOT NULL,
-    "events" TEXT[] DEFAULT ARRAY[]::TEXT[],
+    "events" TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
     "active" BOOLEAN NOT NULL DEFAULT true,
     "last_delivery_status" TEXT,
     "last_delivery_at" TIMESTAMPTZ(6),
@@ -311,13 +315,13 @@ CREATE INDEX "audit_log_created_idx" ON "public"."audit_log"("created_at" DESC);
 CREATE INDEX "audit_log_target_idx" ON "public"."audit_log"("target_namespace" ASC, "target_extension_id" ASC) WHERE (target_namespace IS NOT NULL);
 
 -- CreateIndex
-CREATE UNIQUE INDEX "automation_tokens_token_hash_key" ON "public"."automation_tokens"("token_hash" ASC);
+ALTER TABLE "public"."automation_tokens" ADD CONSTRAINT "automation_tokens_token_hash_key" UNIQUE ("token_hash");
 
 -- CreateIndex
 CREATE INDEX "automation_tokens_user_id_idx" ON "public"."automation_tokens"("user_id" ASC);
 
 -- CreateIndex
-CREATE UNIQUE INDEX "dist_tags_namespace_extension_id_tag_key" ON "public"."dist_tags"("namespace" ASC, "extension_id" ASC, "tag" ASC);
+ALTER TABLE "public"."dist_tags" ADD CONSTRAINT "dist_tags_namespace_extension_id_tag_key" UNIQUE ("namespace", "extension_id", "tag");
 
 -- CreateIndex
 CREATE INDEX "dist_tags_namespace_id_idx" ON "public"."dist_tags"("namespace" ASC, "extension_id" ASC);
@@ -350,19 +354,19 @@ CREATE INDEX "notifications_unread_idx" ON "public"."notifications"("user_id" AS
 CREATE INDEX "notifications_user_id_idx" ON "public"."notifications"("user_id" ASC, "id" DESC);
 
 -- CreateIndex
-CREATE UNIQUE INDEX "oidc_flows_exchange_code_hash_key" ON "public"."oidc_flows"("exchange_code_hash" ASC);
+ALTER TABLE "public"."oidc_flows" ADD CONSTRAINT "oidc_flows_exchange_code_hash_key" UNIQUE ("exchange_code_hash");
 
 -- CreateIndex
 CREATE INDEX "oidc_flows_expires_at_idx" ON "public"."oidc_flows"("expires_at" ASC);
 
 -- CreateIndex
-CREATE UNIQUE INDEX "oidc_flows_state_hash_key" ON "public"."oidc_flows"("state_hash" ASC);
+ALTER TABLE "public"."oidc_flows" ADD CONSTRAINT "oidc_flows_state_hash_key" UNIQUE ("state_hash");
 
 -- CreateIndex
 CREATE INDEX "organization_owners_user_idx" ON "public"."organization_owners"("user_id" ASC);
 
 -- CreateIndex
-CREATE UNIQUE INDEX "rate_limit_entries_bucket_window_start_key" ON "public"."rate_limit_entries"("bucket" ASC, "window_start" ASC);
+ALTER TABLE "public"."rate_limit_entries" ADD CONSTRAINT "rate_limit_entries_bucket_window_start_key" UNIQUE ("bucket", "window_start");
 
 -- CreateIndex
 CREATE INDEX "rate_limit_entries_window_start_idx" ON "public"."rate_limit_entries"("window_start" ASC);
@@ -371,13 +375,13 @@ CREATE INDEX "rate_limit_entries_window_start_idx" ON "public"."rate_limit_entri
 CREATE INDEX "sessions_expires_at_idx" ON "public"."sessions"("expires_at" ASC);
 
 -- CreateIndex
-CREATE UNIQUE INDEX "sessions_token_hash_key" ON "public"."sessions"("token_hash" ASC);
+ALTER TABLE "public"."sessions" ADD CONSTRAINT "sessions_token_hash_key" UNIQUE ("token_hash");
 
 -- CreateIndex
 CREATE INDEX "sessions_user_id_idx" ON "public"."sessions"("user_id" ASC);
 
 -- CreateIndex
-CREATE UNIQUE INDEX "user_identities_issuer_subject_key" ON "public"."user_identities"("issuer" ASC, "subject" ASC);
+ALTER TABLE "public"."user_identities" ADD CONSTRAINT "user_identities_issuer_subject_key" UNIQUE ("issuer", "subject");
 
 -- CreateIndex
 CREATE INDEX "user_identities_user_id_idx" ON "public"."user_identities"("user_id" ASC);
@@ -389,10 +393,10 @@ CREATE INDEX "users_avatar_blob_idx" ON "public"."users"("avatar_blob_digest" AS
 CREATE INDEX "users_banner_blob_idx" ON "public"."users"("banner_blob_digest" ASC) WHERE (banner_blob_digest IS NOT NULL);
 
 -- CreateIndex
-CREATE UNIQUE INDEX "users_id_kind_key" ON "public"."users"("id" ASC, "kind" ASC);
+ALTER TABLE "public"."users" ADD CONSTRAINT "users_id_kind_key" UNIQUE ("id", "kind");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "users_namespace_key" ON "public"."users"("namespace" ASC);
+ALTER TABLE "public"."users" ADD CONSTRAINT "users_namespace_key" UNIQUE ("namespace");
 
 -- CreateIndex
 CREATE INDEX "versions_blob_digest_idx" ON "public"."versions"("blob_digest" ASC);
@@ -404,13 +408,16 @@ CREATE INDEX "versions_namespace_id_idx" ON "public"."versions"("namespace" ASC,
 CREATE UNIQUE INDEX "versions_one_pending_idx" ON "public"."versions"("owner_id" ASC) WHERE (status = ANY (ARRAY['staging'::text, 'pending'::text]));
 
 -- CreateIndex
-CREATE UNIQUE INDEX "versions_owner_id_extension_id_version_key" ON "public"."versions"("owner_id" ASC, "extension_id" ASC, "version" ASC);
+ALTER TABLE "public"."versions" ADD CONSTRAINT "versions_owner_id_extension_id_version_key" UNIQUE ("owner_id", "extension_id", "version");
 
 -- CreateIndex
 CREATE INDEX "versions_public_listing_idx" ON "public"."versions"("namespace" ASC, "extension_id" ASC, "status" ASC, "published_at" DESC) WHERE (status = ANY (ARRAY['published'::text, 'deprecated'::text]));
 
 -- CreateIndex
-CREATE INDEX "versions_search_text_trgm_idx" ON "public"."versions" USING GIN ("search_text" gin_trgm_ops ASC);
+-- The `ASC` Prisma's SQL writer appends here is not accepted by the GIN access
+-- method, so it is dropped: `migrate diff` regenerating this line would put it
+-- back and the baseline would stop applying to an empty database.
+CREATE INDEX "versions_search_text_trgm_idx" ON "public"."versions" USING GIN ("search_text" gin_trgm_ops);
 
 -- CreateIndex
 CREATE INDEX "versions_source_digest_idx" ON "public"."versions"("source_digest" ASC) WHERE (source_digest IS NOT NULL);
@@ -443,16 +450,18 @@ ALTER TABLE "public"."automation_tokens" ADD CONSTRAINT "automation_tokens_user_
 ALTER TABLE "public"."dist_tags" ADD CONSTRAINT "dist_tags_owner_id_fkey" FOREIGN KEY ("owner_id") REFERENCES "public"."users"("id") ON DELETE CASCADE ON UPDATE NO ACTION;
 
 -- AddForeignKey
+ALTER TABLE "public"."extension_owner_invites" ADD CONSTRAINT "extension_owner_invites_owner_id_fkey" FOREIGN KEY ("owner_id") REFERENCES "public"."users"("id") ON DELETE CASCADE ON UPDATE NO ACTION;
 ALTER TABLE "public"."extension_owner_invites" ADD CONSTRAINT "extension_owner_invites_invited_by_fkey" FOREIGN KEY ("invited_by") REFERENCES "public"."users"("id") ON DELETE SET NULL ON UPDATE NO ACTION;
 
 -- AddForeignKey
-ALTER TABLE "public"."extension_owner_invites" ADD CONSTRAINT "extension_owner_invites_owner_id_fkey" FOREIGN KEY ("owner_id") REFERENCES "public"."users"("id") ON DELETE CASCADE ON UPDATE NO ACTION;
-
--- AddForeignKey
-ALTER TABLE "public"."extension_owners" ADD CONSTRAINT "extension_owners_added_by_fkey" FOREIGN KEY ("added_by") REFERENCES "public"."users"("id") ON DELETE NO ACTION ON UPDATE NO ACTION;
-
--- AddForeignKey
 ALTER TABLE "public"."extension_owners" ADD CONSTRAINT "extension_owners_owner_id_fkey" FOREIGN KEY ("owner_id") REFERENCES "public"."users"("id") ON DELETE CASCADE ON UPDATE NO ACTION;
+-- The cascade is declared first because 0010_extension_owners.sql wrote its two
+-- references in that order, and the order decides whether an account can be
+-- deleted: Postgres checks referencing rows in the order the constraints were
+-- created, so a no-action reference created before the cascade sees the row the
+-- cascade is about to remove. Swap these two lines and deleting a publisher
+-- fails on the owner row it added for itself.
+ALTER TABLE "public"."extension_owners" ADD CONSTRAINT "extension_owners_added_by_fkey" FOREIGN KEY ("added_by") REFERENCES "public"."users"("id") ON DELETE NO ACTION ON UPDATE NO ACTION;
 
 -- AddForeignKey
 ALTER TABLE "public"."extension_transfers" ADD CONSTRAINT "extension_transfers_requested_by_fkey" FOREIGN KEY ("requested_by") REFERENCES "public"."users"("id") ON DELETE CASCADE ON UPDATE NO ACTION;
@@ -484,11 +493,8 @@ ALTER TABLE "public"."versions" ADD CONSTRAINT "versions_owner_id_fkey" FOREIGN 
 -- AddForeignKey
 ALTER TABLE "public"."webhook_deliveries" ADD CONSTRAINT "webhook_deliveries_webhook_id_fkey" FOREIGN KEY ("webhook_id") REFERENCES "public"."webhooks"("id") ON DELETE CASCADE ON UPDATE NO ACTION;
 
-CREATE EXTENSION IF NOT EXISTS pg_trgm;
-
 -- prune_notifications function
 CREATE OR REPLACE FUNCTION prune_notifications() RETURNS trigger AS $$
-
   BEGIN
     -- Serialize per user so concurrent inserts cannot race the retention
     -- delete. Xact-scoped, so it releases on commit or rollback.
@@ -503,11 +509,9 @@ CREATE OR REPLACE FUNCTION prune_notifications() RETURNS trigger AS $$
     );
     RETURN NEW;
   END;
-
 $$ LANGUAGE plpgsql;
 
 CREATE OR REPLACE FUNCTION prune_webhook_deliveries() RETURNS trigger AS $$
-
   BEGIN
     DELETE FROM webhook_deliveries
     WHERE webhook_id = NEW.webhook_id AND id <= (
@@ -519,8 +523,20 @@ CREATE OR REPLACE FUNCTION prune_webhook_deliveries() RETURNS trigger AS $$
     );
     RETURN NEW;
   END;
-
 $$ LANGUAGE plpgsql;
+
+-- The named CHECK constraints the SQL migrations carried. Prisma has no way to
+-- model a CHECK constraint, so they live here rather than in
+-- prisma/schema.prisma; `migrate diff` will not reproduce them.
+ALTER TABLE "public"."legal_documents" ADD CONSTRAINT "legal_documents_kind_check" CHECK (kind IN ('terms', 'privacy'));
+ALTER TABLE "public"."notifications" ADD CONSTRAINT "notifications_kind_check" CHECK (kind IN ('review.approved', 'review.rejected', 'terms.bumped', 'tokens.revoked', 'role.changed', 'broadcast', 'extension.owner.added', 'extension.owner.removed', 'extension.owner.invited', 'extension.owner.withdrawn', 'extension.transfer.requested', 'extension.transfer.completed', 'organization.owner.added', 'organization.owner.removed'));
+ALTER TABLE "public"."oidc_flows" ADD CONSTRAINT "oidc_flows_kind_check" CHECK (kind IN ('signin', 'link'));
+ALTER TABLE "public"."organization_owners" ADD CONSTRAINT "organization_owners_org_kind_check" CHECK (org_kind = 'organization');
+ALTER TABLE "public"."organization_owners" ADD CONSTRAINT "organization_owners_user_kind_check" CHECK (user_kind = 'user');
+ALTER TABLE "public"."users" ADD CONSTRAINT "users_kind_check" CHECK (kind IN ('user', 'organization'));
+ALTER TABLE "public"."users" ADD CONSTRAINT "users_password_matches_kind" CHECK (kind = 'user' OR (kind = 'organization' AND password_hash IS NULL));
+ALTER TABLE "public"."users" ADD CONSTRAINT "users_role_check" CHECK (role IN ('admin', 'normal'));
+ALTER TABLE "public"."versions" ADD CONSTRAINT "versions_status_check" CHECK (status IN ('staging', 'pending', 'published', 'rejected', 'yanked', 'deprecated'));
 
 -- triggers
 CREATE TRIGGER notifications_prune AFTER INSERT ON notifications FOR EACH ROW EXECUTE FUNCTION prune_notifications();

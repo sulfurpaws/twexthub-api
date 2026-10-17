@@ -4,7 +4,7 @@ import path from 'node:path';
 import { mkdir, mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import request from 'supertest';
 import assert from 'node:assert/strict';
-import postgres from 'postgres';
+import pg from 'pg';
 import { bootstrap } from '../src/server.js';
 import { createTarballBuffer } from '../src/tarball.js';
 import { DEFAULTS } from '../src/config.js';
@@ -81,11 +81,12 @@ export function makeConfig(overrides = {}) {
   return mergeOverrides(config, overrides);
 }
 
-// postgres.js connects lazily, so a database that is not there does not fail
-// until bootstrap's first query, as a bare driver error. The two ways that
-// usually happens are worth instructions rather than a stack trace: the server
-// is not running, or the database has not been created. Everything else — bad
-// password, deadlocked migration — is left exactly as the driver reported it.
+// The connection is made with a bare `pg` client rather than the app's Prisma
+// client, so the probe can run without the generated client being on disk. The
+// two ways a missing database usually shows up are worth instructions rather
+// than a stack trace: the server is not running, or the database has not been
+// created. Everything else — bad password, deadlocked migration — is left
+// exactly as the driver reported it.
 const CONNECTION_CODES = new Set(['ECONNREFUSED', 'ENOTFOUND', 'ETIMEDOUT', 'ECONNRESET']);
 
 // The connection-check fallback interpolates the URL into its message, so
@@ -152,16 +153,17 @@ function describeBootFailure(error, url) {
 // boot() with the same hint 200-odd times. boot() keeps its own rewrite as the
 // fallback for files run directly, which skip the preflight.
 export async function checkTestDatabase(url = TEST_DATABASE_URL) {
-  const probe = postgres(url, { max: 1, connect_timeout: 5, idle_timeout: 1 });
+  const probe = new pg.Client({ connectionString: url, connectionTimeoutMillis: 5000 });
   try {
-    await probe`SELECT 1`;
+    await probe.connect();
+    await probe.query('SELECT 1');
   } catch (error) {
     const hint =
       describeBootFailure(error, url) ??
       `the test database at ${redactDatabaseUrl(url)} rejected the connection check.`;
     throw new Error(hint, { cause: error });
   } finally {
-    await probe.end({ timeout: 5 });
+    await probe.end().catch(() => {});
   }
 }
 
@@ -188,17 +190,21 @@ export async function boot(overrides = {}, appOptions = {}) {
 }
 
 export async function resetDb() {
-  const { sql } = await boot();
-  await sql.unsafe(`
+  const { db } = await boot();
+  // One statement resets every table the suite writes to and restarts the
+  // sequences, so a test that asserts on `String(1)` still sees id 1.
+  await db.$executeRawUnsafe(`
     TRUNCATE TABLE automation_tokens, sessions, versions, rate_limit_entries, notifications,
     users, legal_documents, download_events, extension_daily_downloads, extension_version_daily_downloads, dist_tags,
     webhook_deliveries, webhooks, user_identities, oidc_flows
     RESTART IDENTITY CASCADE
   `);
-  await sql`
-    INSERT INTO legal_documents (kind, version, body)
-    VALUES ('terms', 1, 'Placeholder terms.'), ('privacy', 1, 'Placeholder privacy.')
-  `;
+  await db.legal_documents.createMany({
+    data: [
+      { kind: 'terms', version: 1, body: 'Placeholder terms.' },
+      { kind: 'privacy', version: 1, body: 'Placeholder privacy.' },
+    ],
+  });
 }
 
 // Walk a collection the way a client that has never seen this API would: hand

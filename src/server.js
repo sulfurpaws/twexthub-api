@@ -18,20 +18,20 @@ export async function bootstrap(
   { backgroundJobs = true, storageProbe, resolveTarget } = {},
 ) {
   ensureDataDirs(config.dataDir);
-  const sql = createDb(config);
+  const db = createDb(config);
   try {
-    await runMigrations(sql);
-    await reconcileOnBoot(sql, config);
-    const { app, rateLimiter, telemetry } = createApp({ config, sql, storageProbe, resolveTarget });
+    await runMigrations(db, config);
+    await reconcileOnBoot(db, config);
+    const { app, rateLimiter, telemetry } = createApp({ config, db, storageProbe, resolveTarget });
     if (!backgroundJobs) {
-      return { app, sql, config, rateLimiter, telemetry };
+      return { app, db, config, rateLimiter, telemetry };
     }
-    const metricsJob = dailyAggregationJob(sql).start();
-    const webhookWorker = makeWebhooks({ sql }).worker().start();
-    const maintenanceJob = makeMaintenanceJob({ sql, config }).start();
-    return { app, sql, config, rateLimiter, telemetry, metricsJob, webhookWorker, maintenanceJob };
+    const metricsJob = dailyAggregationJob(db).start();
+    const webhookWorker = makeWebhooks({ db }).worker().start();
+    const maintenanceJob = makeMaintenanceJob({ db, config }).start();
+    return { app, db, config, rateLimiter, telemetry, metricsJob, webhookWorker, maintenanceJob };
   } catch (error) {
-    await sql.end();
+    await db.$disconnect();
     throw error;
   }
 }
@@ -40,7 +40,7 @@ const isMain = process.argv[1] && process.argv[1] === fileURLToPath(import.meta.
 
 if (isMain) {
   const configPath = process.argv[2] ?? product.defaults?.configFilename ?? 'config.yaml';
-  const { app, sql, config, rateLimiter, metricsJob, webhookWorker, maintenanceJob } =
+  const { app, db, config, rateLimiter, metricsJob, webhookWorker, maintenanceJob } =
     await bootstrap(loadConfig(configPath));
   const server = app.listen(config.port, () => {
     console.log(`${product.name} v${product.version} listening on http://localhost:${config.port}`);
@@ -56,7 +56,7 @@ if (isMain) {
     const force = setTimeout(() => server.closeAllConnections(), 5000);
     await new Promise((resolve) => server.close(resolve));
     clearTimeout(force);
-    await sql.end();
+    await db.$disconnect();
     process.exit(0);
   };
   process.on('SIGINT', shutdown);

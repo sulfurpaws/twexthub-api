@@ -8,8 +8,8 @@ import { createDb, ensureDataDirs } from '../src/db.js';
 test('logging.requests emits one JSON line per request', async () => {
   const config = makeConfig({ logging: { requests: true } });
   ensureDataDirs(config.dataDir);
-  const sql = createDb(config);
-  const { app } = createApp({ config, sql });
+  const db = createDb(config);
+  const { app } = createApp({ config, db });
 
   const lines = [];
   const original = console.log;
@@ -40,5 +40,5 @@ test('logging.requests emits one JSON line per request', async () => {
   assert.ok(unmatched, 'unmatched paths still get a line');
   assert.equal(unmatched.status, 404);
 
-  await sql.end();
+  await db.$disconnect();
 });

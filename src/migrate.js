@@ -10,10 +10,10 @@ const configPath = flagIndex === -1 ? args[0] : args[flagIndex + 1];
 const config = loadConfig(configPath);
 process.env.DATABASE_URL = config.database.url;
 ensureDataDirs(config.dataDir);
-const sql = createDb(config);
+const db = createDb(config);
 try {
-  await runMigrations(sql);
+  await runMigrations(db, config);
   console.log('Migrations applied.');
 } finally {
-  await sql.end();
+  await db.$disconnect();
 }
