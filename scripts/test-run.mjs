@@ -27,26 +27,49 @@ function spawnAndWait(command, args, options = {}) {
   });
 }
 
-// Drops the clones earlier runs left behind — a crashed run never reached its
-// own cleanup — and the ones this run creates. A clone is named `<base>_w<pid>`
-// (test/helpers.mjs), so the suffix after the prefix is always digits; matching
-// only that keeps the scan from touching an unrelated database that merely
-// begins with the same characters. The template carries no such suffix, so it
-// is never dropped.
-async function dropClones() {
+// A clone is named `<base>_w<runId>_<pid>` (test/helpers.mjs): the run that
+// created it, then the process. The run id is the time that run started, so a
+// clone can be told from the template (no suffix) and its age from the name.
+const RUN_ID = Date.now().toString();
+// The suite finishes in about a minute, so a clone this old is residue from a
+// run that died before it could clean up; anything newer might belong to a run
+// happening right now, which must be left alone.
+const STALE_CLONE_MS = 60 * 60 * 1000;
+
+// The run id a clone name carries, or null when the name is not a clone (the
+// template, or a database that merely shares the prefix).
+function cloneRunId(name) {
+  const prefix = `${baseName}_w`;
+  if (!name.startsWith(prefix)) return null;
+  const match = /^([0-9]+)_[0-9]+$/.exec(name.slice(prefix.length));
+  return match ? match[1] : null;
+}
+
+async function dropClones(shouldDrop) {
   const client = new pg.Client({ connectionString: adminUrl.toString() });
   await client.connect();
   try {
     const { rows } = await client.query('SELECT datname FROM pg_database');
-    const prefix = `${baseName}_w`;
-    const isClone = (name) => name.startsWith(prefix) && /^[0-9]+$/.test(name.slice(prefix.length));
-    for (const { datname } of rows.filter((row) => isClone(row.datname))) {
-      await client.query(`DROP DATABASE IF EXISTS "${datname}" WITH (FORCE)`);
+    for (const { datname } of rows) {
+      if (shouldDrop(datname)) {
+        await client.query(`DROP DATABASE IF EXISTS "${datname}" WITH (FORCE)`);
+      }
     }
   } finally {
     await client.end();
   }
 }
+
+// What earlier runs left behind when they crashed before their own cleanup. A
+// concurrent run's clones are minutes old at most, so the age threshold keeps
+// them out of the sweep.
+const isStaleClone = (name) => {
+  const runId = cloneRunId(name);
+  return runId !== null && Date.now() - Number(runId) > STALE_CLONE_MS;
+};
+
+// The clones this run made, known as its own by the id baked into their names.
+const isOwnClone = (name) => cloneRunId(name) === RUN_ID;
 
 // The template is the database a single file run would use, brought fully up to
 // date once. Every clone copies its `_prisma_migrations` history, so the
@@ -77,7 +100,7 @@ function concurrency() {
 const preflight = await spawnAndWait(process.execPath, ['test/preflight.mjs']);
 if (preflight !== 0) process.exit(preflight);
 
-await dropClones();
+await dropClones(isStaleClone);
 await migrateTemplate();
 
 const limit = concurrency();
@@ -90,8 +113,14 @@ const limit = concurrency();
 const code = await spawnAndWait(
   process.execPath,
   ['--test', '--test-force-exit', `--test-concurrency=${limit}`, 'test/*.test.js'],
-  { env: { ...process.env, TWEXTHUB_TEST_ISOLATED: limit > 1 ? '1' : '0' } },
+  {
+    env: {
+      ...process.env,
+      TWEXTHUB_TEST_ISOLATED: limit > 1 ? '1' : '0',
+      TWEXTHUB_TEST_RUN_ID: RUN_ID,
+    },
+  },
 );
 
-await dropClones();
+await dropClones(isOwnClone);
 process.exit(code);

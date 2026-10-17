@@ -34,13 +34,18 @@ export const TEST_DATABASE_URL =
 // is what the runner expects without the orchestrator.
 const ISOLATED = process.env.TWEXTHUB_TEST_ISOLATED === '1';
 
-// A pid names the clone because it is unique among the processes alive at the
-// same moment, so two files running at once never choose the same database. A
-// name a crashed run left behind is dropped before the next run starts.
+// A clone is named `<base>_w<runId>_<pid>`: the run that made it, then the
+// process. The pid keeps two files in the same run apart; the run id — this
+// run's start time, set by `scripts/test-run.mjs` alongside the isolated flag —
+// lets that runner tell the clones a live concurrent run is using from the ones
+// a crashed run left behind, so sweeping one run's residue cannot drop the
+// other's working databases. A pid alone would not: it is unique only among the
+// processes alive at once, so two runs on one machine are indistinguishable.
+const RUN_ID = process.env.TWEXTHUB_TEST_RUN_ID ?? String(Date.now());
 const PROCESS_DATABASE_URL = (() => {
   if (!ISOLATED) return TEST_DATABASE_URL;
   const url = new URL(TEST_DATABASE_URL);
-  url.pathname = `/${url.pathname.slice(1)}_w${process.pid}`;
+  url.pathname = `/${url.pathname.slice(1)}_w${RUN_ID}_${process.pid}`;
   return url.toString();
 })();
 
